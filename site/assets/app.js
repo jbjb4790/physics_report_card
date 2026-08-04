@@ -1,0 +1,595 @@
+(function () {
+  'use strict';
+
+  const core = window.TPLCore;
+  const catalog = window.EXAM_CATALOG || [];
+  const config = window.APP_CONFIG || {};
+  const SETTINGS_KEY = `${config.storageKey || 'tpl-score-report-records-v1'}-settings`;
+  const SEED_KEY = `${config.storageKey || 'tpl-score-report-records-v1'}-seed-version`;
+  const seedMetadata = window.SEED_RECORDS_METADATA || {};
+  const seedRecords = Array.isArray(window.SEED_RECORDS) ? window.SEED_RECORDS : [];
+  const app = document.getElementById('app');
+  const circled = ['', '①', '②', '③', '④', '⑤'];
+
+  const state = {
+    examId: catalog[0]?.id || '',
+    school: '',
+    name: '',
+    answers: Array(20).fill(''),
+    storageMode: config.backendUrl ? 'apps-script' : 'local',
+    backendUrl: config.backendUrl || '',
+    search: '',
+    busy: false,
+    editingId: ''
+  };
+
+  function loadSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+      if (saved.storageMode) state.storageMode = saved.storageMode;
+      if (saved.backendUrl) state.backendUrl = saved.backendUrl;
+    } catch (error) { console.warn('설정을 읽지 못했습니다.', error); }
+  }
+
+  function saveSettings() {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ storageMode: state.storageMode, backendUrl: state.backendUrl }));
+  }
+
+  function readStoredRecords() {
+    try {
+      const value = JSON.parse(localStorage.getItem(config.storageKey) || '[]');
+      return Array.isArray(value) ? value : [];
+    } catch (error) {
+      console.warn('학생 기록을 읽지 못했습니다.', error);
+      return [];
+    }
+  }
+
+  function loadRecords() {
+    return readStoredRecords();
+  }
+
+  function saveRecords(records) {
+    localStorage.setItem(config.storageKey, JSON.stringify(records || []));
+  }
+
+  function normalizedSeedRecords() {
+    return seedRecords
+      .filter((record) => record && core.getExam(catalog, record.examId || state.examId) && record.name)
+      .map((record, index) => {
+        const seedExam = core.getExam(catalog, record.examId || state.examId);
+        return {
+          ...record,
+          id: record.id || `seed-${index + 1}`,
+          examId: record.examId || seedExam.id,
+          round: Number(record.round || seedExam.round || 1),
+          school: core.normalizeText(record.school || seedMetadata.schoolFallback || '미입력'),
+          name: core.normalizeText(record.name),
+          answers: core.normalizeAnswers(record.answers, seedExam.answerCount),
+          createdAt: record.createdAt || '2024-05-20T00:00:00+09:00',
+          updatedAt: record.updatedAt || new Date().toISOString(),
+          source: record.source || seedMetadata.source || '기본 입력 데이터',
+          seedVersion: record.seedVersion || seedMetadata.version || 'seed'
+        };
+      });
+  }
+
+  function mergeSeedRecords(records, options = {}) {
+    const incoming = normalizedSeedRecords();
+    if (!incoming.length) return { records, added: 0, updated: 0 };
+    const output = [...records];
+    let added = 0;
+    let updated = 0;
+    incoming.forEach((seed) => {
+      const key = core.studentKey(seed);
+      const index = output.findIndex((item) => item.id === seed.id || (item.examId === seed.examId && core.studentKey(item) === key));
+      if (index >= 0) {
+        if (options.overwriteSeed && output[index].seedVersion) {
+          output[index] = { ...output[index], ...seed, id: output[index].id || seed.id, createdAt: output[index].createdAt || seed.createdAt, updatedAt: seed.updatedAt };
+          updated += 1;
+        }
+      } else {
+        output.push(seed);
+        added += 1;
+      }
+    });
+    return { records: output, added, updated };
+  }
+
+  function ensureSeedRecords(force = false) {
+    if (!seedRecords.length) return { added: 0, updated: 0 };
+    const currentVersion = seedMetadata.version || 'seed';
+    const alreadySeeded = localStorage.getItem(SEED_KEY) === currentVersion;
+    if (alreadySeeded && !force) return { added: 0, updated: 0 };
+    const merged = mergeSeedRecords(readStoredRecords(), { overwriteSeed: force });
+    if (merged.added || merged.updated || !alreadySeeded) {
+      saveRecords(merged.records);
+      localStorage.setItem(SEED_KEY, currentVersion);
+    }
+    return { added: merged.added, updated: merged.updated };
+  }
+
+  function upsertRecord(record) {
+    const records = loadRecords();
+    const key = core.studentKey(record);
+    const index = records.findIndex((item) => item.examId === record.examId && core.studentKey(item) === key);
+    const now = new Date().toISOString();
+    if (index >= 0) {
+      const previous = records[index];
+      records[index] = {
+        ...previous,
+        ...record,
+        id: previous.id || record.id,
+        serverId: record.serverId || previous.serverId || '',
+        createdAt: previous.createdAt || record.createdAt || now,
+        updatedAt: now
+      };
+      saveRecords(records);
+      return records[index];
+    }
+    const created = { ...record, id: record.id || core.makeId('local'), createdAt: record.createdAt || now, updatedAt: now };
+    records.push(created);
+    saveRecords(records);
+    return created;
+  }
+
+  function deleteRecord(id) {
+    saveRecords(loadRecords().filter((record) => record.id !== id));
+  }
+
+  function exam() { return core.getExam(catalog, state.examId); }
+
+  function escape(value) { return core.escapeHtml(value); }
+
+  function toast(message, type = '') {
+    let stack = document.querySelector('.toast-stack');
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.className = 'toast-stack';
+      document.body.appendChild(stack);
+    }
+    const node = document.createElement('div');
+    node.className = `toast ${type}`;
+    node.textContent = message;
+    stack.appendChild(node);
+    setTimeout(() => node.remove(), 4200);
+  }
+
+  function download(content, type, filename) {
+    const blob = new Blob([content], { type });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed'; textarea.style.opacity = '0';
+    document.body.appendChild(textarea); textarea.select(); document.execCommand('copy'); textarea.remove();
+  }
+
+  function jsonp(url, params, timeout = config.backendTimeoutMs || 15000) {
+    return new Promise((resolve, reject) => {
+      if (!/^https:\/\//i.test(String(url || ''))) { reject(new Error('Apps Script /exec URL을 확인해 주세요.')); return; }
+      const callback = `_tpl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+      const script = document.createElement('script');
+      const timer = setTimeout(() => { cleanup(); reject(new Error('서버 응답 시간이 초과되었습니다.')); }, timeout);
+      function cleanup() { clearTimeout(timer); script.remove(); try { delete window[callback]; } catch (error) { window[callback] = undefined; } }
+      window[callback] = (response) => {
+        cleanup();
+        if (response && response.ok === false) { const error = new Error(response.error || '서버 요청에 실패했습니다.'); error.code = response.code || ''; reject(error); }
+        else resolve(response || {});
+      };
+      const target = new URL(url);
+      Object.entries(params || {}).forEach(([key, value]) => target.searchParams.set(key, typeof value === 'string' ? value : JSON.stringify(value)));
+      target.searchParams.set('callback', callback);
+      target.searchParams.set('_', String(Date.now()));
+      script.src = target.href;
+      script.async = true;
+      script.onerror = () => { cleanup(); reject(new Error('Apps Script에 연결하지 못했습니다. 배포 권한과 URL을 확인하세요.')); };
+      document.head.appendChild(script);
+    });
+  }
+
+  function reportUrl(snapshot, serverId = '') {
+    const url = new URL('report.html', document.baseURI || window.location.href);
+    const hash = new URLSearchParams();
+    const useServer = Boolean(serverId && state.backendUrl);
+    if (useServer) {
+      hash.set(config.serverHashKey || 'id', serverId);
+      hash.set('api', state.backendUrl);
+    } else {
+      hash.set(config.reportHashKey || 'report', core.encodePayload(snapshot));
+    }
+    url.hash = hash.toString();
+    return url.href;
+  }
+
+  async function requestWithWriteKey(params) {
+    let writeKey = sessionStorage.getItem('tpl-backend-write-key') || '';
+    try {
+      return await jsonp(state.backendUrl, { ...params, writeKey });
+    } catch (error) {
+      if (error.code !== 'WRITE_KEY_REQUIRED' && error.code !== 'INVALID_WRITE_KEY') throw error;
+      writeKey = window.prompt('Google Sheets 저장 키를 입력하세요. 이 브라우저 탭에만 임시 보관됩니다.') || '';
+      if (!writeKey) throw error;
+      sessionStorage.setItem('tpl-backend-write-key', writeKey);
+      return jsonp(state.backendUrl, { ...params, writeKey });
+    }
+  }
+
+  function answerGridHtml() {
+    return exam().questions.map((question, index) => {
+      const value = state.answers[index] === '' ? '' : String(state.answers[index]);
+      return `
+      <div class="answer-card${value ? ' is-filled' : ''}" data-question="${question.no}">
+        <div class="answer-card__top"><span class="answer-card__no">${question.no}</span><span class="answer-card__unit" title="${escape(question.unit)}">${escape(question.unit)}</span></div>
+        <div class="answer-entry">
+          <label class="sr-only" for="answer-${index}">${question.no}번 답안</label>
+          <input id="answer-${index}" class="answer-input" type="text" inputmode="numeric" autocomplete="off" maxlength="1" pattern="[1-5]" placeholder="-" value="${escape(value)}" data-index="${index}" aria-label="${question.no}번 답안: 1부터 5까지 입력, 비우면 미기입">
+          <button type="button" class="answer-clear" data-index="${index}" title="${question.no}번 미기입 처리">비우기</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function previewHtml() {
+    const result = core.grade(exam(), state.answers);
+    return `<div class="score-preview__row"><div><div class="quick-stat__label">현재 입력 기준</div><div class="score-preview__score">${core.formatScore(result.score)}<small>/100</small></div></div><div class="score-preview__counts"><span class="count-pill good">정답 ${result.correct}</span><span class="count-pill bad">오답 ${result.wrong}</span><span class="count-pill blank">미기입 ${result.blank}</span></div></div>`;
+  }
+
+  function quickStatsHtml(records) {
+    const current = records.filter((record) => record.examId === state.examId).map((record) => core.enrichRecord(catalog, record));
+    const scores = current.map((record) => record.score);
+    const last = [...records].sort((a,b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))[0];
+    return `<div class="quick-stats">
+      <div class="quick-stat"><span class="quick-stat__icon" aria-hidden="true">01</span><span class="quick-stat__label">등록 학생</span><span class="quick-stat__value">${current.length}<small>명</small></span><span class="quick-stat__hint">현재 선택 시험 · 기본 데이터 포함</span></div>
+      <div class="quick-stat"><span class="quick-stat__icon" aria-hidden="true">Σ</span><span class="quick-stat__label">전체 평균</span><span class="quick-stat__value">${current.length ? core.formatScore(core.average(scores)) : '-'}<small>점</small></span><span class="quick-stat__hint">이 브라우저 기준</span></div>
+      <div class="quick-stat quick-stat--wide"><span class="quick-stat__icon" aria-hidden="true">↗</span><span class="quick-stat__label">최근 생성</span><span class="quick-stat__value quick-stat__value--name">${last ? `${escape(last.school)} ${escape(last.name)}` : '아직 없음'}</span><span class="quick-stat__hint">${last ? core.formatDate(last.updatedAt || last.createdAt) : '첫 성적표를 생성해 주세요.'}</span></div>
+    </div>`;
+  }
+
+  function headerHtml() {
+    const currentExam = exam();
+    return `<header class="site-header"><div class="site-header__inner">
+      <a class="brand" href="./" aria-label="Young's Physics 성적 분석 홈"><img class="brand__logo" src="assets/youngs-physics-logo.png" alt="Young's Physics"><span class="brand__descriptor">TPL SCORE LAB</span></a>
+      <nav class="top-nav" aria-label="교사 화면 주요 메뉴"><a class="top-nav__link is-active" href="#overview">대시보드</a><a class="top-nav__link" href="#student-entry">답안 입력</a><a class="top-nav__link" href="#student-records">학생 기록</a><a class="top-nav__link" href="guide.html">사용 안내</a></nav>
+      <div class="header-actions"><a class="btn btn--soft btn--small" href="${escape(currentExam.problemPdf)}" target="_blank" rel="noopener"><span class="btn-symbol">Q</span>${currentExam.round}회 시험지</a><a class="btn btn--soft btn--small" href="${escape(currentExam.solutionPdf)}" target="_blank" rel="noopener"><span class="btn-symbol">A</span>${currentExam.round}회 해설</a></div>
+    </div></header>`;
+  }
+
+  function teacherSidebarHtml() {
+    return `<aside class="teacher-sidebar" aria-label="교사 도구 바로가기">
+      <div class="teacher-sidebar__title"><span>TEACHER</span><strong>성적 분석 도구</strong></div>
+      <nav class="side-nav">
+        <a class="side-nav__link is-active" href="#overview"><span class="side-nav__icon">⌂</span><span>대시보드</span></a>
+        <a class="side-nav__link" href="#student-entry"><span class="side-nav__icon">✎</span><span>학생 답안 입력</span></a>
+        <a class="side-nav__link" href="#student-records"><span class="side-nav__icon">▤</span><span>학생 기록</span></a>
+        <a class="side-nav__link" href="assets/학생답안_입력양식.csv" download><span class="side-nav__icon">↓</span><span>CSV 입력 양식</span></a>
+        <a class="side-nav__link" href="guide.html"><span class="side-nav__icon">?</span><span>설치·운영 안내</span></a>
+      </nav>
+      <div class="teacher-sidebar__orbit" aria-hidden="true"><img src="assets/youngs-physics-mark.png" alt=""></div>
+      <p class="teacher-sidebar__foot">YOUNG'S PHYSICS</p>
+    </aside>`;
+  }
+
+  function formHtml() {
+    const modeText = state.storageMode === 'apps-script' ? 'Google Sheet 누적 저장' : '브라우저 저장·링크 백업';
+    return `<section id="student-entry" class="card sticky-card anchor-section">
+      <div class="card__head"><div><h2>학생 답안 입력</h2><p>학교·이름·20문항 답안을 입력하세요.</p></div><span class="tag">${modeText}</span></div>
+      <div class="card__body">
+        <div class="field"><label for="examSelect">시험</label><select id="examSelect" class="select">${catalog.map((item) => `<option value="${escape(item.id)}"${item.id === state.examId ? ' selected' : ''}>${escape(item.title)}</option>`).join('')}</select></div>
+        <div class="form-row"><div class="field"><label for="schoolInput">학교</label><input class="input" id="schoolInput" maxlength="60" placeholder="예: 한국과학영재학교" value="${escape(state.school)}"></div><div class="field"><label for="nameInput">학생 이름</label><input class="input" id="nameInput" maxlength="30" placeholder="예: 김물리" value="${escape(state.name)}"></div></div>
+        <div class="field"><label for="bulkInput">답안 한 번에 붙여넣기</label><textarea class="textarea" id="bulkInput" placeholder="4 5 4 1 3 3 5 5 2 5 4 5 3 5 2 5 2 5 4 1"></textarea><small>공백·쉼표로 구분합니다. 0, X, -는 미기입입니다.</small></div>
+        <div class="button-row" style="margin-top:0"><button class="btn btn--secondary btn--small" type="button" id="applyBulk">붙여넣기 적용</button><button class="btn btn--soft btn--small" type="button" id="sampleData">예시 입력</button></div>
+        <div class="form-divider"></div>
+        <div class="section-label"><strong>문항별 답안</strong><span>정답 +5 · 오답 -1.25 · 미기입 0</span></div>
+        <div class="answer-grid" id="answerGrid">${answerGridHtml()}</div>
+        <div class="score-preview" id="scorePreview">${previewHtml()}</div>
+        <details style="margin-top:17px"><summary style="cursor:pointer;font-size:12px;font-weight:800;color:var(--brand)">누적 저장 방식 설정</summary>
+          <div style="padding-top:13px"><div class="field"><label for="storageMode">저장 방식</label><select class="select" id="storageMode"><option value="local"${state.storageMode === 'local' ? ' selected' : ''}>브라우저 저장 + 링크 내 결과 포함</option><option value="apps-script"${state.storageMode === 'apps-script' ? ' selected' : ''}>Google Sheets + Apps Script</option></select></div>
+          <div class="field${state.storageMode === 'apps-script' ? '' : ' hidden'}" id="backendField"><label for="backendUrl">Apps Script 웹 앱 URL</label><input class="input" id="backendUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec" value="${escape(state.backendUrl)}"><small>설치 후 한 번만 입력하면 이 브라우저에 저장됩니다. 학생 링크에는 무작위 결과 토큰만 사용됩니다.</small><div class="button-row" style="margin-top:9px"><button class="btn btn--soft btn--small" type="button" id="pingBackend">서버 연결 확인</button><button class="btn btn--soft btn--small" type="button" id="forgetWriteKey">저장 키 지우기</button></div></div></div>
+        </details>
+        <div class="button-row"><button class="btn btn--primary" type="button" id="generateReport"${state.busy ? ' disabled' : ''}>${state.busy ? '저장·분석 중…' : state.editingId ? '수정하고 링크 다시 생성' : '학생별 성적표 링크 생성'}</button><button class="btn btn--soft" type="button" id="clearForm">초기화</button></div>
+      </div>
+    </section>`;
+  }
+
+  function statusDots(record) {
+    const result = core.grade(core.getExam(catalog, record.examId), record.answers);
+    return result.questionResults.map((item) => `<i class="status-dot ${item.status}" title="${item.no}번 ${item.status}"></i>`).join('');
+  }
+
+  function recordRows(records) {
+    const query = core.normalizeKey(state.search);
+    const filtered = records
+      .filter((record) => !query || core.normalizeKey(`${record.school} ${record.name} ${record.examId}`).includes(query))
+      .sort((a,b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
+    if (!filtered.length) return '';
+    return filtered.map((record) => {
+      const enriched = core.enrichRecord(catalog, record);
+      return `<tr data-id="${escape(record.id)}"><td><span class="student-name">${escape(record.name)}</span><span class="student-school">${escape(record.school)}</span></td><td>${escape(enriched.examTitle || record.examId)}</td><td class="score-cell">${core.formatScore(enriched.score)}</td><td><div class="status-dots">${statusDots(record)}</div></td><td>${core.formatDate(record.updatedAt || record.createdAt)}</td><td><div class="row-actions"><button class="btn btn--soft btn--small" data-action="edit">수정</button><button class="btn btn--secondary btn--small" data-action="open">열기</button><button class="btn btn--danger btn--small" data-action="delete">삭제</button></div></td></tr>`;
+    }).join('');
+  }
+
+  function recordsHtml(records) {
+    const rows = recordRows(records);
+    return `<section id="student-records" class="card anchor-section"><div class="card__head"><div><h2>학생 기록과 결과 링크</h2><p>같은 학교·이름·시험을 다시 입력하면 기존 기록을 갱신합니다.</p></div></div><div class="card__body">
+      <div class="table-tools"><input id="recordSearch" class="input table-tools__search" type="search" placeholder="학교 또는 학생 이름 검색" value="${escape(state.search)}"><div class="tool-group"><button class="btn btn--soft btn--small" id="exportCsv">CSV</button><button class="btn btn--soft btn--small" id="exportJson">JSON 백업</button>${seedRecords.length ? '<button class="btn btn--soft btn--small" id="restoreSeedData">1·2·3·4·5회 기존 데이터 다시 불러오기</button>' : ''}<button class="btn btn--soft btn--small" id="importData">가져오기</button><input id="importFile" class="hidden" type="file" accept=".csv,.json,text/csv,application/json"></div></div>
+      ${rows ? `<div class="table-wrap"><table><thead><tr><th>학생</th><th>시험</th><th>점수</th><th>문항 결과</th><th>수정 시각</th><th><span class="sr-only">작업</span></th></tr></thead><tbody id="recordBody">${rows}</tbody></table></div>` : `<div class="empty-state"><div class="empty-state__mark">◎</div><strong>${state.search ? '검색 결과가 없습니다.' : '아직 학생 기록이 없습니다.'}</strong><span>${state.search ? '다른 이름이나 학교를 검색해 보세요.' : '첫 학생의 답안을 입력하면 전체 평균과 문항별 정답률이 계산됩니다.'}</span></div>`}
+      <div class="notice"><strong>개인정보와 링크 보안</strong><br>결과 링크는 비밀번호가 없는 ‘소지자 링크’입니다. 링크를 아는 사람은 학생 정보를 볼 수 있으므로 공개 게시판에는 올리지 마세요. 브라우저 모드의 전체 통계는 현재 기기에 저장된 기록만 기준으로 합니다.</div>
+      <div class="source-links"><a class="btn btn--secondary btn--small" href="assets/학생답안_입력양식.csv" download>CSV 입력 양식</a><a class="btn btn--secondary btn--small" href="assets/1회v3_학생기록_사이트반영.csv" download>1회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/2회v2_학생기록_사이트반영.csv" download>2회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/3회_학생기록_사이트반영.csv" download>3회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/4회_학생기록_사이트반영.csv" download>4회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/5회_학생기록_사이트반영.csv" download>5회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_1회.pdf" target="_blank">1회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_1회_해설.pdf" target="_blank">1회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_2회.pdf" target="_blank">2회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_2회_해설.pdf" target="_blank">2회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_3회.pdf" target="_blank">3회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_3회_해설.pdf" target="_blank">3회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_4회.pdf" target="_blank">4회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_4회_해설.pdf" target="_blank">4회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_5회.pdf" target="_blank">5회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_5회_해설.pdf" target="_blank">5회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_6회.pdf" target="_blank">6회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_6회_해설.pdf" target="_blank">6회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_7회.pdf" target="_blank">7회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_7회_해설.pdf" target="_blank">7회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_8회.pdf" target="_blank">8회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_8회_해설.pdf" target="_blank">8회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_9회.pdf" target="_blank">9회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_9회_해설.pdf" target="_blank">9회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_10회.pdf" target="_blank">10회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_10회_해설.pdf" target="_blank">10회 해설</a></div>
+    </div></section>`;
+  }
+
+  function pageHtml() {
+    const records = loadRecords();
+    return `${headerHtml()}<div class="admin-workspace">${teacherSidebarHtml()}<main class="container">
+      <section id="overview" class="admin-hero anchor-section"><div class="hero-panel"><div class="hero-panel__brand"><img src="assets/youngs-physics-mark.png" alt=""><span>YOUNG'S PHYSICS · TPL SCORE LAB</span></div><p class="eyebrow">TEACHER CONSOLE</p><h1>답안을 한 번 입력하면<br>학생별 성적표와 학습 분석 링크가 완성됩니다.</h1><p>자동 채점, 전체 성적 비교, 문항별 정답률, 이전 회차 추세, 강점·취약점, 오답 해설·공식, 직접 풀고 채점하는 동형 문제를 하나의 브랜드 리포트로 제공합니다.</p><div class="hero-badges"><span class="hero-badge">정답 +5점</span><span class="hero-badge">오답 -1.25점</span><span class="hero-badge">미기입 0점</span><span class="hero-badge">학생별 고유 링크</span><span class="hero-badge">PDF·Word 출력</span></div></div>${quickStatsHtml(records)}</section>
+      <section class="admin-grid">${formHtml()}${recordsHtml(records)}</section>
+      <div class="notice source-correction"><strong>${escape(exam().shortTitle || exam().title)} 자료 기준 및 해설 메모</strong><br>${escape(exam().sourceNotice)}</div>
+    </main></div><footer class="site-footer"><div class="site-footer__inner"><img src="assets/youngs-physics-mark.png" alt=""><span>Young's Physics · TPL Score Lab</span><small>GitHub Pages 정적 사이트 + 선택형 Google Sheets 저장</small></div></footer>`;
+  }
+
+  function render() {
+    app.innerHTML = pageHtml();
+    bindEvents();
+  }
+
+  function refreshAnswerInputs() {
+    document.querySelectorAll('.answer-input').forEach((input) => {
+      const index = Number(input.dataset.index);
+      const value = state.answers[index] === '' ? '' : String(state.answers[index]);
+      if (document.activeElement !== input) input.value = value;
+      input.closest('.answer-card')?.classList.toggle('is-filled', Boolean(value));
+    });
+  }
+
+  function updatePreviewOnly(refreshGrid = false) {
+    const grid = document.getElementById('answerGrid');
+    if (grid && refreshGrid) {
+      grid.innerHTML = answerGridHtml();
+      bindAnswerInputs();
+    } else {
+      refreshAnswerInputs();
+    }
+    const preview = document.getElementById('scorePreview');
+    if (preview) preview.innerHTML = previewHtml();
+  }
+
+  function focusAnswer(index) {
+    const input = document.querySelector(`.answer-input[data-index="${index}"]`);
+    if (input) { input.focus(); input.select(); }
+  }
+
+  function setAnswerValue(index, rawValue) {
+    const normalized = core.normalizeAnswer(rawValue);
+    state.answers[index] = normalized === null ? '' : normalized;
+  }
+
+  function bindAnswerInputs() {
+    document.querySelectorAll('.answer-input').forEach((input) => {
+      input.addEventListener('input', (event) => {
+        const index = Number(input.dataset.index);
+        const raw = event.target.value;
+        const parsedMany = core.parseAnswerText(raw, exam().answerCount);
+        if (parsedMany.length > 1) {
+          state.answers = core.normalizeAnswers(parsedMany, exam().answerCount);
+          updatePreviewOnly(true);
+          focusAnswer(Math.min(parsedMany.length, exam().answerCount) - 1);
+          return;
+        }
+        setAnswerValue(index, raw);
+        input.value = state.answers[index] === '' ? '' : String(state.answers[index]);
+        updatePreviewOnly(false);
+        if (state.answers[index] !== '' && index < exam().answerCount - 1) focusAnswer(index + 1);
+      });
+      input.addEventListener('keydown', (event) => {
+        const index = Number(input.dataset.index);
+        if (event.key === 'ArrowRight' || event.key === 'Enter') { event.preventDefault(); focusAnswer(Math.min(index + 1, exam().answerCount - 1)); }
+        if (event.key === 'ArrowLeft') { event.preventDefault(); focusAnswer(Math.max(index - 1, 0)); }
+        if (event.key === 'Backspace' || event.key === 'Delete') {
+          if (input.value === '') { state.answers[index] = ''; updatePreviewOnly(false); }
+        }
+        if (/^[0xX\-]$/.test(event.key)) {
+          event.preventDefault(); state.answers[index] = ''; input.value = ''; updatePreviewOnly(false); if (index < exam().answerCount - 1) focusAnswer(index + 1);
+        }
+      });
+      input.addEventListener('paste', (event) => {
+        const text = event.clipboardData?.getData('text') || '';
+        const parsed = core.parseAnswerText(text, exam().answerCount);
+        if (parsed.length > 1) {
+          event.preventDefault(); state.answers = core.normalizeAnswers(parsed, exam().answerCount); updatePreviewOnly(true); focusAnswer(Math.min(parsed.length, exam().answerCount) - 1);
+        }
+      });
+    });
+    document.querySelectorAll('.answer-clear').forEach((button) => button.addEventListener('click', () => {
+      const index = Number(button.dataset.index);
+      state.answers[index] = '';
+      updatePreviewOnly(false);
+      focusAnswer(index);
+    }));
+  }
+
+  function bindEvents() {
+    bindAnswerInputs();
+    document.getElementById('examSelect')?.addEventListener('change', (event) => {
+      state.examId = event.target.value; state.answers = Array(core.getExam(catalog, state.examId).answerCount).fill(''); render();
+    });
+    document.getElementById('schoolInput')?.addEventListener('input', (event) => { state.school = event.target.value; });
+    document.getElementById('nameInput')?.addEventListener('input', (event) => { state.name = event.target.value; });
+    document.getElementById('applyBulk')?.addEventListener('click', () => {
+      const input = document.getElementById('bulkInput');
+      const parsed = core.parseAnswerText(input.value, exam().answerCount);
+      if (!parsed.length) { toast('답안을 인식하지 못했습니다.', 'error'); return; }
+      state.answers = core.normalizeAnswers(parsed, exam().answerCount);
+      updatePreviewOnly(true);
+      toast(`${Math.min(parsed.length, exam().answerCount)}개 답안을 적용했습니다.`, 'good');
+    });
+    document.getElementById('sampleData')?.addEventListener('click', () => {
+      state.school = '예시고등학교'; state.name = '김물리';
+      state.answers = [...exam().answerKey]; state.answers[2] = 2; state.answers[6] = ''; state.answers[9] = 3; state.answers[13] = 4; state.answers[17] = '';
+      render(); toast('기능 확인용 예시 답안을 넣었습니다.');
+    });
+    document.getElementById('storageMode')?.addEventListener('change', (event) => {
+      state.storageMode = event.target.value;
+      document.getElementById('backendField')?.classList.toggle('hidden', state.storageMode !== 'apps-script');
+      saveSettings();
+    });
+    document.getElementById('backendUrl')?.addEventListener('change', (event) => { state.backendUrl = event.target.value.trim(); saveSettings(); });
+    document.getElementById('pingBackend')?.addEventListener('click', async () => {
+      state.backendUrl = document.getElementById('backendUrl')?.value.trim() || '';
+      saveSettings();
+      if (!/^https:\/\/script\.google\.com\//i.test(state.backendUrl)) { toast('Apps Script의 /exec URL을 입력해 주세요.', 'error'); return; }
+      try {
+        const response = await jsonp(state.backendUrl, { action: 'ping' });
+        toast(response.message || 'Apps Script 서버 연결에 성공했습니다.', 'good');
+      } catch (error) { toast(`서버 연결 실패: ${error.message}`, 'error'); }
+    });
+    document.getElementById('forgetWriteKey')?.addEventListener('click', () => {
+      sessionStorage.removeItem('tpl-backend-write-key');
+      toast('이 탭에 임시 저장된 Google Sheets 저장 키를 지웠습니다.');
+    });
+    document.getElementById('generateReport')?.addEventListener('click', generate);
+    document.getElementById('clearForm')?.addEventListener('click', () => { state.school=''; state.name=''; state.answers=Array(exam().answerCount).fill(''); state.editingId=''; render(); });
+    bindRecordEvents();
+  }
+
+  function bindRecordEvents() {
+    document.getElementById('recordSearch')?.addEventListener('input', (event) => { state.search = event.target.value; renderRecordsArea(); });
+    document.getElementById('recordBody')?.addEventListener('click', recordAction);
+    document.getElementById('exportCsv')?.addEventListener('click', exportCsv);
+    document.getElementById('exportJson')?.addEventListener('click', exportJson);
+    document.getElementById('restoreSeedData')?.addEventListener('click', () => {
+      const result = ensureSeedRecords(true);
+      render();
+      toast(result.added || result.updated ? `기존 성적 데이터 ${result.added}명 추가, ${result.updated}명 갱신했습니다.` : '기존 1·2·3·4·5회 데이터가 이미 모두 들어 있습니다.', 'good');
+    });
+    document.getElementById('importData')?.addEventListener('click', () => document.getElementById('importFile')?.click());
+    document.getElementById('importFile')?.addEventListener('change', importFile);
+  }
+
+  function renderRecordsArea() {
+    const card = document.querySelector('.admin-grid > section.card:last-child');
+    if (card) { card.outerHTML = recordsHtml(loadRecords()); bindRecordEvents(); }
+  }
+
+  function validateStudent() {
+    if (!state.school.trim()) { toast('학교를 입력해 주세요.', 'error'); document.getElementById('schoolInput')?.focus(); return false; }
+    if (!state.name.trim()) { toast('학생 이름을 입력해 주세요.', 'error'); document.getElementById('nameInput')?.focus(); return false; }
+    if (state.storageMode === 'apps-script' && !/^https:\/\/script\.google\.com\//i.test(state.backendUrl)) { toast('Apps Script의 /exec URL을 입력해 주세요.', 'error'); return false; }
+    return true;
+  }
+
+  async function generate() {
+    if (state.busy || !validateStudent()) return;
+    state.busy = true; render();
+    try {
+      let record = upsertRecord({
+        id: state.editingId || core.makeId('local'), examId: state.examId, round: exam().round,
+        school: state.school.trim(), name: state.name.trim(), answers: core.normalizeAnswers(state.answers, exam().answerCount),
+        createdAt: new Date().toISOString()
+      });
+      let records = loadRecords();
+      let snapshot = core.buildSnapshot(catalog, record, records);
+      let serverId = record.serverId || '';
+      let serverWorked = false;
+      if (state.storageMode === 'apps-script') {
+        saveSettings();
+        try {
+          const serverPayload = { examId: record.examId, round: record.round, school: record.school, name: record.name, answers: record.answers, createdAt: record.createdAt };
+          const response = await requestWithWriteKey({ action: 'save', payload: JSON.stringify(serverPayload) });
+          serverId = response.token || response.id || response.report?.record?.id || serverId;
+          if (serverId) record = upsertRecord({ ...record, serverId });
+          if (response.report?.record) snapshot = response.report;
+          serverWorked = true;
+        } catch (error) {
+          toast(`Google Sheet 저장 실패: ${error.message} 브라우저 백업 링크로 생성합니다.`, 'error');
+        }
+      }
+      const url = reportUrl(snapshot, serverWorked ? serverId : '');
+      openLinkModal(url, snapshot, serverWorked);
+      state.editingId = record.id;
+      toast(`${record.name} 학생의 성적표 링크를 만들었습니다.`, 'good');
+    } catch (error) {
+      console.error(error); toast(`리포트 생성 중 오류: ${error.message}`, 'error');
+    } finally {
+      state.busy = false; render();
+    }
+  }
+
+  function openLinkModal(url, snapshot, serverWorked) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="linkModalTitle"><div class="modal__head"><div><h3 id="linkModalTitle">${escape(snapshot.record.name)} 학생 전용 링크</h3><p style="margin:5px 0 0;color:var(--muted);font-size:12px">${escape(snapshot.record.school)} · ${escape(snapshot.record.examTitle)}</p></div><button class="close-button" aria-label="닫기">×</button></div><div class="modal__body"><div class="score-preview"><div class="score-preview__row"><div><span class="quick-stat__label">산출 점수</span><div class="score-preview__score">${core.formatScore(snapshot.record.score)}<small>/100</small></div></div><div class="score-preview__counts"><span class="count-pill good">정답 ${snapshot.record.correct}</span><span class="count-pill bad">오답 ${snapshot.record.wrong}</span><span class="count-pill blank">미기입 ${snapshot.record.blank}</span></div></div></div><div class="link-box">${escape(url)}</div><div class="button-row"><button class="btn btn--primary" id="modalCopy">링크 복사</button><a class="btn btn--secondary" href="${escape(url)}" target="_blank" rel="noopener">성적표 열기</a></div><p style="font-size:11px;color:var(--muted)">${serverWorked ? 'Google Sheet에서 무작위 토큰으로 결과와 최신 누적 통계를 불러옵니다.' : '링크 안에 현재 성적과 통계 백업이 포함되어 있어 다른 기기에서도 열 수 있습니다.'}</p></div></div>`;
+    document.body.appendChild(modal);
+    const close = () => modal.remove();
+    modal.addEventListener('click', (event) => { if (event.target === modal || event.target.closest('.close-button')) close(); });
+    modal.querySelector('#modalCopy').addEventListener('click', async () => { await copyText(url); toast('학생 전용 링크를 복사했습니다.', 'good'); });
+  }
+
+  async function recordAction(event) {
+    const button = event.target.closest('button[data-action]');
+    const row = button?.closest('tr[data-id]');
+    if (!button || !row) return;
+    const record = loadRecords().find((item) => item.id === row.dataset.id);
+    if (!record) return;
+    if (button.dataset.action === 'edit') {
+      state.examId=record.examId; state.school=record.school; state.name=record.name; state.answers=core.normalizeAnswers(record.answers, core.getExam(catalog, record.examId).answerCount); state.editingId=record.id; render(); window.scrollTo({top:0,behavior:'smooth'}); toast('학생 기록을 입력 칸에 불러왔습니다.');
+    }
+    if (button.dataset.action === 'open') {
+      const snapshot = core.buildSnapshot(catalog, record, loadRecords());
+      window.open(reportUrl(snapshot, record.serverId || ''), '_blank', 'noopener');
+    }
+    if (button.dataset.action === 'delete') {
+      const hasServerRecord = Boolean(record.serverId && state.backendUrl);
+      const message = hasServerRecord
+        ? `${record.school} ${record.name} 학생의 브라우저 기록과 Google Sheet 결과를 함께 삭제할까요?\n기존 학생 링크는 더 이상 열리지 않습니다.`
+        : `${record.school} ${record.name} 학생의 이 브라우저 기록을 삭제할까요?`;
+      if (!confirm(message)) return;
+      if (hasServerRecord) {
+        try { await requestWithWriteKey({ action: 'delete', id: record.serverId }); }
+        catch (error) { toast(`서버 삭제 실패: ${error.message}`, 'error'); return; }
+      }
+      deleteRecord(record.id); render(); toast(hasServerRecord ? '브라우저와 서버 기록을 삭제했습니다.' : '브라우저 기록을 삭제했습니다.');
+    }
+  }
+
+  function exportCsv() {
+    const records = loadRecords();
+    if (!records.length) { toast('내보낼 기록이 없습니다.', 'error'); return; }
+    download(core.toCsv(records, catalog), 'text/csv;charset=utf-8', `TPL_학생기록_${new Date().toISOString().slice(0,10)}.csv`);
+  }
+
+  function exportJson() {
+    const records = loadRecords();
+    if (!records.length) { toast('백업할 기록이 없습니다.', 'error'); return; }
+    download(JSON.stringify({version:1,exportedAt:new Date().toISOString(),records}, null, 2), 'application/json;charset=utf-8', `TPL_학생기록_백업_${new Date().toISOString().slice(0,10)}.json`);
+  }
+
+  async function importFile(event) {
+    const file = event.target.files?.[0]; event.target.value=''; if (!file) return;
+    try {
+      const text = await file.text();
+      let incoming;
+      if (/\.csv$/i.test(file.name)) incoming = core.csvToRecords(text, catalog);
+      else { const parsed = JSON.parse(text); incoming = Array.isArray(parsed) ? parsed : parsed.records; }
+      if (!Array.isArray(incoming)) throw new Error('학생 기록 배열이 없습니다.');
+      let count=0;
+      incoming.forEach((record) => { if (record?.school && record?.name && core.getExam(catalog, record.examId)) { upsertRecord({...record,answers:core.normalizeAnswers(record.answers,core.getExam(catalog,record.examId).answerCount)}); count++; } });
+      render(); toast(`${count}개 학생 기록을 가져왔습니다.`, 'good');
+    } catch (error) { toast(`파일을 가져오지 못했습니다: ${error.message}`, 'error'); }
+  }
+
+  loadSettings();
+  const seedResult = ensureSeedRecords(false);
+  if (seedResult.added) console.info(`기본 1·2·3·4·5회 데이터 ${seedResult.added}명을 불러왔습니다.`);
+  render();
+})();

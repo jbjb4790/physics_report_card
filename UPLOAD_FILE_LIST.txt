@@ -1,0 +1,15 @@
+[GitHub 저장소 최상위에 올릴 항목]
+.github/
+site/
+apps-script/
+brand-assets/
+sample-data/
+tests/
+.gitignore
+README.md
+package.json
+GITHUB_UPLOAD_GUIDE.md
+UPLOAD_FILE_LIST.txt
+
+[올리지 않아도 되는 작업 파일]
+원본 xlsx, 개별 미리보기 png, 검증용 렌더링, Python 생성 스크립트, 이전 버전 ZIP
