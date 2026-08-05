@@ -1191,3 +1191,95 @@ tbody tr:hover { background: #f6faff; }
 @media (max-width: 720px) {
   .backend-field-actions .btn { flex: 1 1 calc(50% - 5px); }
 }
+
+/* Enlarged student-report export controls */
+.report-toolbar__buttons {
+  align-items: center;
+  gap: 10px;
+}
+.report-toolbar__buttons #copyLink {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+.report-toolbar__buttons .report-export-btn {
+  min-height: 52px;
+  padding: 0 20px;
+  gap: 10px;
+  border-radius: 14px;
+  font-size: 15px;
+  font-weight: 950;
+  box-shadow: 0 10px 24px rgba(7, 95, 232, .15);
+}
+.report-toolbar__buttons .report-export-btn .btn-symbol {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 7px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+.report-toolbar__buttons #wordButton .btn-symbol {
+  font-size: 15px;
+}
+.report-toolbar__buttons #printButton .btn-symbol {
+  font-size: 9px;
+  letter-spacing: -.03em;
+}
+.report-toolbar__buttons .report-export-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 13px 28px rgba(7, 95, 232, .22);
+}
+
+@media (max-width: 820px) {
+  .report-toolbar__inner {
+    min-height: 74px;
+  }
+  .report-toolbar__buttons {
+    gap: 7px;
+  }
+  .report-toolbar__buttons #copyLink {
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+  .report-toolbar__buttons .report-export-btn {
+    width: 50px;
+    min-width: 50px;
+    min-height: 50px;
+    padding: 0;
+    border-radius: 13px;
+  }
+  .report-toolbar__buttons .report-export-btn .btn-symbol {
+    min-width: 31px;
+    height: 31px;
+    padding: 0 5px;
+    border-radius: 9px;
+  }
+}
+
+@media (max-width: 600px) {
+  .report-toolbar__inner {
+    padding-left: 10px;
+    padding-right: 10px;
+    gap: 8px;
+  }
+  .report-brand .brand__logo {
+    width: 112px;
+  }
+  .report-toolbar__buttons {
+    gap: 5px;
+  }
+  .report-toolbar__buttons #copyLink {
+    width: 42px;
+    min-width: 42px;
+    min-height: 42px;
+  }
+  .report-toolbar__buttons .report-export-btn {
+    width: 48px;
+    min-width: 48px;
+    min-height: 48px;
+  }
+}
+

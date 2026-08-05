@@ -104,7 +104,7 @@
     return `<header class="report-toolbar no-print"><div class="report-toolbar__inner">
       <a class="brand report-brand" href="./" aria-label="Young's Physics 입력 화면"><img class="brand__logo" src="assets/youngs-physics-logo.png" alt="Young's Physics"><span class="brand__descriptor">${esc(snapshot.record.name)} 학생 리포트</span></a>
       <nav class="report-top-nav" aria-label="리포트 메뉴"><a class="report-top-nav__link is-active" href="#dashboard">대시보드</a><a class="report-top-nav__link" href="#scorecard">성적 분석</a><a class="report-top-nav__link" href="#learning-analysis">강점·취약점</a><a class="report-top-nav__link" href="#question-analysis">문항 분석</a><a class="report-top-nav__link" href="#wrong-answer-learning">오답 학습</a></nav>
-      <div class="report-toolbar__buttons"><button class="btn btn--soft btn--small" id="copyLink" title="링크 복사"><span class="btn-symbol">↗</span><span>링크 복사</span></button><button class="btn btn--secondary btn--small" id="wordButton" title="Word 저장"><span class="btn-symbol">W</span><span>Word 저장</span></button><button class="btn btn--primary btn--small" id="printButton" title="PDF 저장 또는 인쇄"><span class="btn-symbol">PDF</span><span>PDF·인쇄</span></button></div>
+      <div class="report-toolbar__buttons"><button class="btn btn--soft btn--small" id="copyLink" title="링크 복사"><span class="btn-symbol">↗</span><span>링크 복사</span></button><button class="btn btn--secondary report-export-btn" id="wordButton" title="Word 저장"><span class="btn-symbol">W</span><span>Word 저장</span></button><button class="btn btn--primary report-export-btn" id="printButton" title="PDF 저장 또는 인쇄"><span class="btn-symbol">PDF</span><span>PDF·인쇄</span></button></div>
     </div></header>`;
   }
 
