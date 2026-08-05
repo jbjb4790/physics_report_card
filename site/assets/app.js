@@ -237,11 +237,28 @@
   }
 
   async function copyText(text) {
-    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (error) {
+      console.warn('Clipboard API 복사에 실패하여 대체 방식을 사용합니다.', error);
+    }
     const textarea = document.createElement('textarea');
     textarea.value = text;
-    textarea.style.position = 'fixed'; textarea.style.opacity = '0';
-    document.body.appendChild(textarea); textarea.select(); document.execCommand('copy'); textarea.remove();
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const copied = document.execCommand('copy');
+    textarea.remove();
+    if (!copied) throw new Error('브라우저가 자동 복사를 허용하지 않았습니다.');
+    return true;
   }
 
   function jsonp(url, params, timeout = config.backendTimeoutMs || 15000) {
@@ -464,7 +481,7 @@
           <div style="padding-top:13px"><div class="field"><label for="storageMode">저장 방식</label><select class="select" id="storageMode"><option value="local"${state.storageMode === 'local' ? ' selected' : ''}>브라우저 저장 + 링크 내 결과 포함</option><option value="apps-script"${state.storageMode === 'apps-script' ? ' selected' : ''}>Google Sheets + Apps Script</option></select></div>
           <div class="field${state.storageMode === 'apps-script' ? '' : ' hidden'}" id="backendField"><label for="backendUrl">Apps Script 웹 앱 URL</label><input class="input" id="backendUrl" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec" value="${escape(state.backendUrl)}">${backendStatusHtml()}<small class="backend-setting-note">주소는 입력하는 즉시 이 브라우저에 저장되고, 다음 접속부터 자동으로 연결을 확인합니다. 학생 링크에는 무작위 결과 토큰과 조회용 서버 주소만 들어갑니다. <strong>WRITE_KEY는 보안을 위해 계속 현재 탭에만 임시 저장됩니다.</strong></small><div class="button-row backend-field-actions"><button class="btn btn--primary btn--small" type="button" id="pingBackend">주소 저장·연결 확인</button><button class="btn btn--soft btn--small" type="button" id="copyBackendSetup">다른 기기 설정 링크 복사</button><button class="btn btn--soft btn--small" type="button" id="forgetWriteKey">저장 키 지우기</button><button class="btn btn--ghost btn--small" type="button" id="clearBackendConnection">연결 주소 지우기</button></div></div></div>
         </details>
-        <div class="button-row"><button class="btn btn--primary" type="button" id="generateReport"${state.busy ? ' disabled' : ''}>${state.busy ? '저장·분석 중…' : state.editingId ? '수정하고 링크 다시 생성' : '학생별 성적표 링크 생성'}</button><button class="btn btn--soft" type="button" id="clearForm">초기화</button></div>
+        <div class="button-row report-create-row"><button class="btn btn--primary btn--copy-report" type="button" id="generateReport"${state.busy ? ' disabled' : ''}><span class="btn-symbol">↗</span><span>${state.busy ? '저장·링크 복사 중…' : state.editingId ? '수정하고 분석 링크 복사' : '성적 분석 링크 생성·복사'}</span></button><button class="btn btn--soft" type="button" id="clearForm">초기화</button></div>
       </div>
     </section>`;
   }
@@ -482,7 +499,7 @@
     if (!filtered.length) return '';
     return filtered.map((record) => {
       const enriched = core.enrichRecord(catalog, record);
-      return `<tr data-id="${escape(record.id)}"><td><span class="student-name">${escape(record.name)}</span><span class="student-school">${escape(record.school)}</span></td><td>${escape(enriched.examTitle || record.examId)}</td><td class="score-cell">${core.formatScore(enriched.score)}</td><td><div class="status-dots">${statusDots(record)}</div></td><td>${core.formatDate(record.updatedAt || record.createdAt)}</td><td><div class="row-actions"><button class="btn btn--soft btn--small" data-action="edit">수정</button><button class="btn btn--secondary btn--small" data-action="open">열기</button><button class="btn btn--danger btn--small" data-action="delete">삭제</button></div></td></tr>`;
+      return `<tr data-id="${escape(record.id)}"><td><span class="student-name">${escape(record.name)}</span><span class="student-school">${escape(record.school)}</span></td><td>${escape(enriched.examTitle || record.examId)}</td><td class="score-cell">${core.formatScore(enriched.score)}</td><td><div class="status-dots">${statusDots(record)}</div></td><td>${core.formatDate(record.updatedAt || record.createdAt)}</td><td><div class="row-actions"><button class="btn btn--soft btn--small" data-action="edit">수정</button><button class="btn btn--primary btn--small" data-action="copy">링크 복사</button><button class="btn btn--secondary btn--small" data-action="open">열기</button><button class="btn btn--danger btn--small" data-action="delete">삭제</button></div></td></tr>`;
     }).join('');
   }
 
@@ -710,9 +727,16 @@
         }
       }
       const url = reportUrl(snapshot, serverWorked ? serverId : '');
-      openLinkModal(url, snapshot, serverWorked);
+      let copied = false;
+      try {
+        await copyText(url);
+        copied = true;
+      } catch (copyError) {
+        console.warn('생성된 링크 자동 복사 실패', copyError);
+      }
+      openLinkModal(url, snapshot, serverWorked, copied);
       state.editingId = record.id;
-      toast(`${record.name} 학생의 성적표 링크를 만들었습니다.`, 'good');
+      toast(copied ? `${record.name} 학생의 성적 분석 링크를 생성하고 복사했습니다.` : `${record.name} 학생의 성적 분석 링크를 생성했습니다. 팝업의 링크 복사 버튼을 눌러 주세요.`, copied ? 'good' : '');
     } catch (error) {
       console.error(error); toast(`리포트 생성 중 오류: ${error.message}`, 'error');
     } finally {
@@ -720,14 +744,14 @@
     }
   }
 
-  function openLinkModal(url, snapshot, serverWorked) {
+  function openLinkModal(url, snapshot, serverWorked, copied = false) {
     const modal = document.createElement('div');
     modal.className = 'modal-backdrop';
-    modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="linkModalTitle"><div class="modal__head"><div><h3 id="linkModalTitle">${escape(snapshot.record.name)} 학생 전용 링크</h3><p style="margin:5px 0 0;color:var(--muted);font-size:12px">${escape(snapshot.record.school)} · ${escape(snapshot.record.examTitle)}</p></div><button class="close-button" aria-label="닫기">×</button></div><div class="modal__body"><div class="score-preview"><div class="score-preview__row"><div><span class="quick-stat__label">산출 점수</span><div class="score-preview__score">${core.formatScore(snapshot.record.score)}<small>/100</small></div></div><div class="score-preview__counts"><span class="count-pill good">정답 ${snapshot.record.correct}</span><span class="count-pill bad">오답 ${snapshot.record.wrong}</span><span class="count-pill blank">미기입 ${snapshot.record.blank}</span></div></div></div><div class="link-box">${escape(url)}</div><div class="button-row"><button class="btn btn--primary" id="modalCopy">링크 복사</button><a class="btn btn--secondary" href="${escape(url)}" target="_blank" rel="noopener">성적표 열기</a></div><p style="font-size:11px;color:var(--muted)">${serverWorked ? 'Google Sheet에서 무작위 토큰으로 결과와 최신 누적 통계를 불러옵니다.' : '링크 안에 현재 성적과 통계 백업이 포함되어 있어 다른 기기에서도 열 수 있습니다.'}</p></div></div>`;
+    modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="linkModalTitle"><div class="modal__head"><div><h3 id="linkModalTitle">${copied ? '성적 분석 링크 복사 완료' : `${escape(snapshot.record.name)} 학생 전용 링크`}</h3><p style="margin:5px 0 0;color:var(--muted);font-size:12px">${escape(snapshot.record.school)} · ${escape(snapshot.record.examTitle)}</p></div><button class="close-button" aria-label="닫기">×</button></div><div class="modal__body"><div class="link-copy-alert ${copied ? 'is-copied' : 'is-manual'}"><strong>${copied ? '바로 붙여넣을 수 있게 클립보드에 복사했습니다.' : '브라우저가 자동 복사를 막았습니다.'}</strong><span>${copied ? '카카오톡, 문자, 이메일 등에 그대로 붙여넣어 공유하면 됩니다.' : '아래의 큰 링크 복사 버튼을 한 번 눌러 주세요.'}</span></div><div class="score-preview"><div class="score-preview__row"><div><span class="quick-stat__label">산출 점수</span><div class="score-preview__score">${core.formatScore(snapshot.record.score)}<small>/100</small></div></div><div class="score-preview__counts"><span class="count-pill good">정답 ${snapshot.record.correct}</span><span class="count-pill bad">오답 ${snapshot.record.wrong}</span><span class="count-pill blank">미기입 ${snapshot.record.blank}</span></div></div></div><div class="link-box">${escape(url)}</div><div class="button-row link-modal-actions"><button class="btn btn--primary" id="modalCopy"><span class="btn-symbol">↗</span>링크 다시 복사</button><a class="btn btn--secondary" href="${escape(url)}" target="_blank" rel="noopener">성적표 열기</a></div><p style="font-size:11px;color:var(--muted)">${serverWorked ? 'Google Sheet에서 무작위 토큰으로 결과와 최신 누적 통계를 불러옵니다. 링크를 아는 사람은 별도 로그인 없이 학생 리포트를 볼 수 있습니다.' : '링크 안에 현재 성적과 통계 백업이 포함되어 있어 다른 기기에서도 열 수 있습니다.'}</p></div></div>`;
     document.body.appendChild(modal);
     const close = () => modal.remove();
     modal.addEventListener('click', (event) => { if (event.target === modal || event.target.closest('.close-button')) close(); });
-    modal.querySelector('#modalCopy').addEventListener('click', async () => { await copyText(url); toast('학생 전용 링크를 복사했습니다.', 'good'); });
+    modal.querySelector('#modalCopy').addEventListener('click', async () => { await copyText(url); toast('학생 성적 분석 링크를 복사했습니다.', 'good'); });
   }
 
   async function recordAction(event) {
@@ -738,6 +762,16 @@
     if (!record) return;
     if (button.dataset.action === 'edit') {
       state.examId=record.examId; state.school=record.school; state.name=record.name; state.answers=core.normalizeAnswers(record.answers, core.getExam(catalog, record.examId).answerCount); state.editingId=record.id; render(); window.scrollTo({top:0,behavior:'smooth'}); toast('학생 기록을 입력 칸에 불러왔습니다.');
+    }
+    if (button.dataset.action === 'copy') {
+      const snapshot = core.buildSnapshot(catalog, record, loadRecords());
+      const url = reportUrl(snapshot, record.serverId || '');
+      try {
+        await copyText(url);
+        toast(`${record.name} 학생 성적 분석 링크를 복사했습니다.`, 'good');
+      } catch (error) {
+        toast(`링크 복사 실패: ${error.message}`, 'error');
+      }
     }
     if (button.dataset.action === 'open') {
       const snapshot = core.buildSnapshot(catalog, record, loadRecords());

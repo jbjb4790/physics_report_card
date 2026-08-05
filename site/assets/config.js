@@ -3,7 +3,7 @@ window.APP_CONFIG = {
   storageKey: 'tpl-score-report-records-v1',
   // 모든 교사 기기에서 자동 연결하려면 아래 값에 Apps Script /exec 주소를 넣고 GitHub에 올리세요.
   // WRITE_KEY는 절대로 이 파일에 넣지 않습니다.
-  backendUrl: '',
+  backendUrl: 'https://script.google.com/macros/s/AKfycbx3PkumTW3dFg1nvXpgcp3o0Y3NX7YfrcMyDUtYB_uMVAKsxe6SDPWi0clMBR-SPwkwzA/exec',
   backendAutoConnect: true,
   backendSetupParam: 'appsScript',
   backendTimeoutMs: 15000,

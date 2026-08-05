@@ -1283,3 +1283,66 @@ tbody tr:hover { background: #f6faff; }
   }
 }
 
+/* One-click student report link generation/copy */
+.report-create-row {
+  align-items: stretch;
+  gap: 12px;
+}
+.report-create-row .btn--copy-report {
+  flex: 1 1 270px;
+  min-height: 58px;
+  padding: 0 22px;
+  border-radius: 16px;
+  font-size: 16px;
+  font-weight: 950;
+  letter-spacing: -.02em;
+  box-shadow: 0 14px 30px rgba(7, 95, 232, .22);
+}
+.report-create-row .btn--copy-report .btn-symbol {
+  min-width: 31px;
+  height: 31px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.report-create-row #clearForm {
+  min-height: 58px;
+  padding: 0 18px;
+  border-radius: 16px;
+}
+.link-copy-alert {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 13px;
+  padding: 13px 14px;
+  border-radius: 14px;
+  border: 1px solid #cfe4f8;
+  background: #f1f7ff;
+  color: #25425f;
+  font-size: 12px;
+}
+.link-copy-alert strong { color: var(--brand); font-size: 13px; }
+.link-copy-alert.is-copied {
+  border-color: #bde8d8;
+  background: #f0fbf7;
+}
+.link-copy-alert.is-copied strong { color: var(--good); }
+.link-copy-alert.is-manual {
+  border-color: #edd8a7;
+  background: #fff9e9;
+}
+.link-modal-actions .btn {
+  min-height: 50px;
+  border-radius: 14px;
+  font-size: 14px;
+}
+.link-modal-actions .btn--primary { flex: 1 1 210px; }
+.row-actions .btn[data-action="copy"] { white-space: nowrap; }
+
+@media (max-width: 720px) {
+  .report-create-row .btn--copy-report,
+  .report-create-row #clearForm {
+    flex: 1 1 100%;
+    min-height: 54px;
+  }
+  .link-modal-actions .btn { flex: 1 1 100%; }
+}
