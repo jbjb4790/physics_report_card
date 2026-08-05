@@ -1148,3 +1148,46 @@ tbody tr:hover { background: #f6faff; }
   .report-cover__identity { overflow: hidden; }
   .report-cover__tags span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
+
+
+/* Apps Script persistent connection */
+.backend-connection {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 58px;
+  padding: 11px 12px;
+  border: 1px solid #d7e2f0;
+  border-radius: 13px;
+  background: #f7faff;
+  color: #42536c;
+}
+.backend-connection__dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #a9b5c5;
+  box-shadow: 0 0 0 4px rgba(169,181,197,.15);
+}
+.backend-connection strong { display: block; color: var(--ink); font-size: 12px; line-height: 1.35; }
+.backend-connection small { display: block; margin-top: 3px; color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.backend-connection--checking { border-color: #bfd6fb; background: #f0f6ff; }
+.backend-connection--checking .backend-connection__dot { background: var(--brand-2); box-shadow: 0 0 0 4px rgba(7,95,232,.13); animation: backend-pulse 1.25s ease-in-out infinite; }
+.backend-connection--connected { border-color: #bde8d8; background: #f0fbf7; }
+.backend-connection--connected .backend-connection__dot { background: var(--good); box-shadow: 0 0 0 4px rgba(22,166,117,.13); }
+.backend-connection--connected strong { color: var(--good); }
+.backend-connection--saved { border-color: #cdddf2; background: #f5f9ff; }
+.backend-connection--saved .backend-connection__dot { background: var(--brand-2); box-shadow: 0 0 0 4px rgba(7,95,232,.10); }
+.backend-connection--error { border-color: #f2c4ca; background: #fff6f7; }
+.backend-connection--error .backend-connection__dot { background: var(--bad); box-shadow: 0 0 0 4px rgba(239,79,95,.12); }
+.backend-connection--error strong { color: var(--bad); }
+.backend-setting-note { line-height: 1.6; }
+.backend-setting-note strong { color: #42536c; }
+.backend-field-actions { margin-top: 0 !important; }
+@keyframes backend-pulse { 0%,100% { opacity: .45; transform: scale(.88); } 50% { opacity: 1; transform: scale(1.08); } }
+
+@media (max-width: 720px) {
+  .backend-field-actions .btn { flex: 1 1 calc(50% - 5px); }
+}

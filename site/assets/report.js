@@ -6,6 +6,7 @@
   const config = window.APP_CONFIG || {};
   const extraPractice = window.TPL_EXTRA_PRACTICE || {};
   const practiceByExam = window.TPL_EXTRA_PRACTICE_BY_EXAM || {};
+  const SETTINGS_KEY = `${config.storageKey || 'tpl-score-report-records-v1'}-settings`;
   const app = document.getElementById('reportApp');
   const circled = ['', '①', '②', '③', '④', '⑤'];
   let currentSnapshot = null;
@@ -36,10 +37,19 @@
     });
   }
 
+  function savedBackendUrl() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+      return String(saved.backendUrl || '').trim();
+    } catch (error) {
+      return '';
+    }
+  }
+
   function parseLink() {
     const params = new URLSearchParams(location.hash.replace(/^#/, ''));
     const id = params.get(config.serverHashKey || 'id') || '';
-    const api = params.get('api') || '';
+    const api = params.get('api') || config.backendUrl || savedBackendUrl() || '';
     const encoded = params.get(config.reportHashKey || 'report') || '';
     let fallback = null;
     if (encoded) {

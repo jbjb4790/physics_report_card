@@ -6,6 +6,7 @@
   const config = window.APP_CONFIG || {};
   const SETTINGS_KEY = `${config.storageKey || 'tpl-score-report-records-v1'}-settings`;
   const SEED_KEY = `${config.storageKey || 'tpl-score-report-records-v1'}-seed-version`;
+  const BACKEND_SETUP_PARAM = config.backendSetupParam || 'appsScript';
   const seedMetadata = window.SEED_RECORDS_METADATA || {};
   const seedRecords = Array.isArray(window.SEED_RECORDS) ? window.SEED_RECORDS : [];
   const app = document.getElementById('app');
@@ -18,21 +19,89 @@
     answers: Array(20).fill(''),
     storageMode: config.backendUrl ? 'apps-script' : 'local',
     backendUrl: config.backendUrl || '',
+    backendStatus: 'idle',
+    backendStatusMessage: '',
+    backendLastVerifiedAt: '',
     search: '',
     busy: false,
     editingId: ''
   };
 
-  function loadSettings() {
+  function normalizeBackendUrl(value) {
+    const input = String(value || '').trim().replace(/\s+/g, '');
+    if (!input) return '';
+    const match = input.match(/^(https:\/\/script\.google\.com\/macros\/s\/[^/?#]+\/exec)\/?(?:[?#].*)?$/i);
+    return match ? match[1] : input;
+  }
+
+  function isValidBackendUrl(value) {
+    return /^https:\/\/script\.google\.com\/macros\/s\/[^/?#]+\/exec$/i.test(normalizeBackendUrl(value));
+  }
+
+  function setupBackendUrlFromLocation() {
     try {
-      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-      if (saved.storageMode) state.storageMode = saved.storageMode;
-      if (saved.backendUrl) state.backendUrl = saved.backendUrl;
-    } catch (error) { console.warn('설정을 읽지 못했습니다.', error); }
+      const params = new URLSearchParams(window.location.search);
+      return normalizeBackendUrl(params.get(BACKEND_SETUP_PARAM) || '');
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function removeBackendSetupParam() {
+    try {
+      const url = new URL(window.location.href);
+      if (!url.searchParams.has(BACKEND_SETUP_PARAM)) return;
+      url.searchParams.delete(BACKEND_SETUP_PARAM);
+      window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+    } catch (error) {
+      console.warn('연결 설정 URL을 정리하지 못했습니다.', error);
+    }
+  }
+
+  function loadSettings() {
+    let saved = {};
+    try {
+      saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    } catch (error) {
+      console.warn('설정을 읽지 못했습니다.', error);
+    }
+
+    const setupUrl = setupBackendUrlFromLocation();
+    const storedUrl = normalizeBackendUrl(saved.backendUrl || '');
+    const configuredUrl = normalizeBackendUrl(config.backendUrl || '');
+    const validCandidate = [setupUrl, storedUrl, configuredUrl].find(isValidBackendUrl);
+    state.backendUrl = validCandidate || setupUrl || storedUrl || configuredUrl || '';
+    state.backendLastVerifiedAt = saved.backendLastVerifiedAt || '';
+
+    if (setupUrl) state.storageMode = 'apps-script';
+    else if (saved.storageMode === 'local' || saved.storageMode === 'apps-script') state.storageMode = saved.storageMode;
+    else if (state.backendUrl) state.storageMode = 'apps-script';
+
+    if (state.backendUrl) {
+      state.backendStatus = isValidBackendUrl(state.backendUrl) ? 'saved' : 'error';
+      state.backendStatusMessage = isValidBackendUrl(state.backendUrl)
+        ? '저장된 Apps Script 주소를 불러왔습니다. 자동 연결을 확인합니다.'
+        : '저장된 주소 형식을 확인해 주세요.';
+    }
+
+    if (setupUrl) {
+      saveSettings();
+      removeBackendSetupParam();
+    }
   }
 
   function saveSettings() {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ storageMode: state.storageMode, backendUrl: state.backendUrl }));
+    state.backendUrl = normalizeBackendUrl(state.backendUrl);
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+        storageMode: state.storageMode,
+        backendUrl: state.backendUrl,
+        backendLastVerifiedAt: state.backendLastVerifiedAt || '',
+        updatedAt: new Date().toISOString()
+      }));
+    } catch (error) {
+      console.warn('연결 설정을 저장하지 못했습니다.', error);
+    }
   }
 
   function readStoredRecords() {
@@ -198,6 +267,104 @@
     });
   }
 
+  let backendConnectionRequest = null;
+  let lastAutoConnectUrl = '';
+
+  function backendStatusHtml() {
+    const valid = isValidBackendUrl(state.backendUrl);
+    const status = state.backendStatus || (valid ? 'saved' : 'idle');
+    const labelMap = {
+      connected: 'Google Sheets 자동 연결됨',
+      checking: 'Apps Script 연결 확인 중',
+      saved: 'Apps Script 주소 저장됨',
+      error: 'Apps Script 연결 확인 필요',
+      idle: 'Apps Script 주소 미설정'
+    };
+    const defaultMessage = {
+      connected: '새로고침하거나 사이트를 다시 배포해도 이 브라우저에서는 같은 주소로 자동 연결됩니다.',
+      checking: '저장된 /exec 주소로 서버 응답을 확인하고 있습니다.',
+      saved: '주소가 이 브라우저에 저장되었습니다. 연결 확인을 누르거나 잠시 기다려 주세요.',
+      error: '웹 앱 배포 권한과 /exec 주소를 확인해 주세요.',
+      idle: 'Google Sheets를 사용하려면 Apps Script 웹 앱의 /exec 주소를 입력하세요.'
+    };
+    let verified = '';
+    if (state.backendLastVerifiedAt && status === 'connected') {
+      try { verified = ` · 마지막 확인 ${new Date(state.backendLastVerifiedAt).toLocaleString('ko-KR')}`; }
+      catch (error) { verified = ''; }
+    }
+    return `<div class="backend-connection backend-connection--${status}" id="backendConnectionStatus" role="status" aria-live="polite"><span class="backend-connection__dot" aria-hidden="true"></span><div><strong>${escape(labelMap[status] || labelMap.idle)}</strong><small>${escape(state.backendStatusMessage || defaultMessage[status] || defaultMessage.idle)}${escape(verified)}</small></div></div>`;
+  }
+
+  function setBackendStatus(status, message = '') {
+    state.backendStatus = status;
+    state.backendStatusMessage = message;
+    const node = document.getElementById('backendConnectionStatus');
+    if (node) node.outerHTML = backendStatusHtml();
+    const modeTag = document.querySelector('#student-entry .card__head .tag');
+    if (modeTag && state.storageMode === 'apps-script') {
+      modeTag.textContent = status === 'connected' ? 'Google Sheet 자동 연결됨' : 'Google Sheet 누적 저장';
+    }
+  }
+
+  function syncBackendUrlFromField() {
+    const input = document.getElementById('backendUrl');
+    if (input) {
+      state.backendUrl = normalizeBackendUrl(input.value);
+      if (input.value !== state.backendUrl) input.value = state.backendUrl;
+    } else {
+      state.backendUrl = normalizeBackendUrl(state.backendUrl);
+    }
+    saveSettings();
+    return state.backendUrl;
+  }
+
+  function backendSetupLink() {
+    const url = new URL('./', window.location.href);
+    url.hash = '';
+    url.searchParams.set(BACKEND_SETUP_PARAM, state.backendUrl);
+    return url.href;
+  }
+
+  async function connectBackend(options = {}) {
+    const { silent = false, force = false } = options;
+    const url = syncBackendUrlFromField();
+    if (!isValidBackendUrl(url)) {
+      setBackendStatus('error', 'Apps Script 웹 앱의 https://script.google.com/macros/s/.../exec 주소를 입력해 주세요.');
+      if (!silent) toast('Apps Script의 /exec URL을 입력해 주세요.', 'error');
+      return false;
+    }
+    state.storageMode = 'apps-script';
+    saveSettings();
+    if (backendConnectionRequest && !force) return backendConnectionRequest;
+    setBackendStatus('checking');
+    backendConnectionRequest = jsonp(url, { action: 'ping' })
+      .then((response) => {
+        state.backendLastVerifiedAt = new Date().toISOString();
+        state.backendStatus = 'connected';
+        state.backendStatusMessage = response.message || 'Apps Script 서버와 연결되었습니다.';
+        saveSettings();
+        setBackendStatus('connected', state.backendStatusMessage);
+        if (!silent) toast(response.message || 'Apps Script 서버 연결에 성공했습니다.', 'good');
+        return true;
+      })
+      .catch((error) => {
+        state.backendStatus = 'error';
+        state.backendStatusMessage = error.message;
+        setBackendStatus('error', error.message);
+        if (!silent) toast(`서버 연결 실패: ${error.message}`, 'error');
+        return false;
+      })
+      .finally(() => { backendConnectionRequest = null; });
+    return backendConnectionRequest;
+  }
+
+  function autoConnectBackend() {
+    if (config.backendAutoConnect === false || state.storageMode !== 'apps-script' || !isValidBackendUrl(state.backendUrl)) return;
+    if (lastAutoConnectUrl === state.backendUrl && (state.backendStatus === 'connected' || state.backendStatus === 'checking')) return;
+    lastAutoConnectUrl = state.backendUrl;
+    window.setTimeout(() => connectBackend({ silent: true }), 0);
+  }
+
   function reportUrl(snapshot, serverId = '') {
     const url = new URL('report.html', document.baseURI || window.location.href);
     const hash = new URLSearchParams();
@@ -281,7 +448,7 @@
   }
 
   function formHtml() {
-    const modeText = state.storageMode === 'apps-script' ? 'Google Sheet 누적 저장' : '브라우저 저장·링크 백업';
+    const modeText = state.storageMode === 'apps-script' ? (state.backendStatus === 'connected' ? 'Google Sheet 자동 연결됨' : 'Google Sheet 누적 저장') : '브라우저 저장·링크 백업';
     return `<section id="student-entry" class="card sticky-card anchor-section">
       <div class="card__head"><div><h2>학생 답안 입력</h2><p>학교·이름·20문항 답안을 입력하세요.</p></div><span class="tag">${modeText}</span></div>
       <div class="card__body">
@@ -295,7 +462,7 @@
         <div class="score-preview" id="scorePreview">${previewHtml()}</div>
         <details style="margin-top:17px"><summary style="cursor:pointer;font-size:12px;font-weight:800;color:var(--brand)">누적 저장 방식 설정</summary>
           <div style="padding-top:13px"><div class="field"><label for="storageMode">저장 방식</label><select class="select" id="storageMode"><option value="local"${state.storageMode === 'local' ? ' selected' : ''}>브라우저 저장 + 링크 내 결과 포함</option><option value="apps-script"${state.storageMode === 'apps-script' ? ' selected' : ''}>Google Sheets + Apps Script</option></select></div>
-          <div class="field${state.storageMode === 'apps-script' ? '' : ' hidden'}" id="backendField"><label for="backendUrl">Apps Script 웹 앱 URL</label><input class="input" id="backendUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec" value="${escape(state.backendUrl)}"><small>설치 후 한 번만 입력하면 이 브라우저에 저장됩니다. 학생 링크에는 무작위 결과 토큰만 사용됩니다.</small><div class="button-row" style="margin-top:9px"><button class="btn btn--soft btn--small" type="button" id="pingBackend">서버 연결 확인</button><button class="btn btn--soft btn--small" type="button" id="forgetWriteKey">저장 키 지우기</button></div></div></div>
+          <div class="field${state.storageMode === 'apps-script' ? '' : ' hidden'}" id="backendField"><label for="backendUrl">Apps Script 웹 앱 URL</label><input class="input" id="backendUrl" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec" value="${escape(state.backendUrl)}">${backendStatusHtml()}<small class="backend-setting-note">주소는 입력하는 즉시 이 브라우저에 저장되고, 다음 접속부터 자동으로 연결을 확인합니다. 학생 링크에는 무작위 결과 토큰과 조회용 서버 주소만 들어갑니다. <strong>WRITE_KEY는 보안을 위해 계속 현재 탭에만 임시 저장됩니다.</strong></small><div class="button-row backend-field-actions"><button class="btn btn--primary btn--small" type="button" id="pingBackend">주소 저장·연결 확인</button><button class="btn btn--soft btn--small" type="button" id="copyBackendSetup">다른 기기 설정 링크 복사</button><button class="btn btn--soft btn--small" type="button" id="forgetWriteKey">저장 키 지우기</button><button class="btn btn--ghost btn--small" type="button" id="clearBackendConnection">연결 주소 지우기</button></div></div></div>
         </details>
         <div class="button-row"><button class="btn btn--primary" type="button" id="generateReport"${state.busy ? ' disabled' : ''}>${state.busy ? '저장·분석 중…' : state.editingId ? '수정하고 링크 다시 생성' : '학생별 성적표 링크 생성'}</button><button class="btn btn--soft" type="button" id="clearForm">초기화</button></div>
       </div>
@@ -442,16 +609,41 @@
       state.storageMode = event.target.value;
       document.getElementById('backendField')?.classList.toggle('hidden', state.storageMode !== 'apps-script');
       saveSettings();
+      if (state.storageMode === 'apps-script') autoConnectBackend();
     });
-    document.getElementById('backendUrl')?.addEventListener('change', (event) => { state.backendUrl = event.target.value.trim(); saveSettings(); });
-    document.getElementById('pingBackend')?.addEventListener('click', async () => {
-      state.backendUrl = document.getElementById('backendUrl')?.value.trim() || '';
+    document.getElementById('backendUrl')?.addEventListener('input', (event) => {
+      state.backendUrl = String(event.target.value || '').trim();
+      state.storageMode = 'apps-script';
+      state.backendStatus = isValidBackendUrl(state.backendUrl) ? 'saved' : (state.backendUrl ? 'error' : 'idle');
+      state.backendStatusMessage = isValidBackendUrl(state.backendUrl)
+        ? '주소가 이 브라우저에 저장되었습니다. 연결 확인을 눌러 주세요.'
+        : (state.backendUrl ? 'Apps Script의 /exec 주소 형식을 확인해 주세요.' : '');
       saveSettings();
-      if (!/^https:\/\/script\.google\.com\//i.test(state.backendUrl)) { toast('Apps Script의 /exec URL을 입력해 주세요.', 'error'); return; }
-      try {
-        const response = await jsonp(state.backendUrl, { action: 'ping' });
-        toast(response.message || 'Apps Script 서버 연결에 성공했습니다.', 'good');
-      } catch (error) { toast(`서버 연결 실패: ${error.message}`, 'error'); }
+      setBackendStatus(state.backendStatus, state.backendStatusMessage);
+    });
+    document.getElementById('backendUrl')?.addEventListener('change', (event) => {
+      state.backendUrl = normalizeBackendUrl(event.target.value);
+      event.target.value = state.backendUrl;
+      saveSettings();
+    });
+    document.getElementById('pingBackend')?.addEventListener('click', () => connectBackend({ force: true }));
+    document.getElementById('copyBackendSetup')?.addEventListener('click', async () => {
+      syncBackendUrlFromField();
+      if (!isValidBackendUrl(state.backendUrl)) { toast('먼저 올바른 Apps Script /exec 주소를 입력해 주세요.', 'error'); return; }
+      await copyText(backendSetupLink());
+      toast('다른 기기에서 한 번 열면 자동 연결되는 설정 링크를 복사했습니다.', 'good');
+    });
+    document.getElementById('clearBackendConnection')?.addEventListener('click', () => {
+      if (state.backendUrl && !confirm('이 브라우저에 저장된 Apps Script 연결 주소를 지울까요? 학생 기록은 삭제되지 않습니다.')) return;
+      state.backendUrl = '';
+      state.backendLastVerifiedAt = '';
+      state.backendStatus = 'idle';
+      state.backendStatusMessage = '';
+      state.storageMode = 'local';
+      lastAutoConnectUrl = '';
+      saveSettings();
+      render();
+      toast('Apps Script 연결 주소를 지우고 브라우저 저장 방식으로 전환했습니다.');
     });
     document.getElementById('forgetWriteKey')?.addEventListener('click', () => {
       sessionStorage.removeItem('tpl-backend-write-key');
@@ -484,7 +676,10 @@
   function validateStudent() {
     if (!state.school.trim()) { toast('학교를 입력해 주세요.', 'error'); document.getElementById('schoolInput')?.focus(); return false; }
     if (!state.name.trim()) { toast('학생 이름을 입력해 주세요.', 'error'); document.getElementById('nameInput')?.focus(); return false; }
-    if (state.storageMode === 'apps-script' && !/^https:\/\/script\.google\.com\//i.test(state.backendUrl)) { toast('Apps Script의 /exec URL을 입력해 주세요.', 'error'); return false; }
+    if (state.storageMode === 'apps-script') {
+      syncBackendUrlFromField();
+      if (!isValidBackendUrl(state.backendUrl)) { toast('Apps Script의 /exec URL을 입력해 주세요.', 'error'); return false; }
+    }
     return true;
   }
 
@@ -592,4 +787,5 @@
   const seedResult = ensureSeedRecords(false);
   if (seedResult.added) console.info(`기본 1·2·3·4·5회 데이터 ${seedResult.added}명을 불러왔습니다.`);
   render();
+  autoConnectBackend();
 })();
