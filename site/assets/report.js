@@ -119,7 +119,7 @@
     return `<header class="report-toolbar no-print"><div class="report-toolbar__inner">
       <a class="brand report-brand" href="./" aria-label="Young's Physics 입력 화면"><img class="brand__logo" src="assets/youngs-physics-logo.png" alt="Young's Physics"><span class="brand__descriptor">${esc(snapshot.record.name)} 학생 리포트</span></a>
       <nav class="report-top-nav" aria-label="리포트 메뉴"><a class="report-top-nav__link is-active" href="#dashboard">대시보드</a><a class="report-top-nav__link" href="#scorecard">성적 분석</a><a class="report-top-nav__link" href="#learning-analysis">강점·취약점</a><a class="report-top-nav__link" href="#question-analysis">문항 분석</a><a class="report-top-nav__link" href="#wrong-answer-learning">오답 학습</a></nav>
-      <div class="report-toolbar__buttons">${dataSource === 'server' ? '<button class="btn btn--soft btn--small report-refresh-btn" id="refreshReport" title="Google Sheet에서 최신 분석 다시 불러오기"><span class="btn-symbol">↻</span><span>최신 분석</span></button>' : ''}<button class="btn btn--soft btn--small" id="copyLink" title="링크 복사"><span class="btn-symbol">↗</span><span>링크 복사</span></button><button class="btn btn--secondary report-export-btn" id="wordButton" title="Word 저장"><span class="btn-symbol">W</span><span>Word 저장</span></button><button class="btn btn--primary report-export-btn" id="printButton" title="PDF 저장 또는 인쇄"><span class="btn-symbol">PDF</span><span>PDF·인쇄</span></button></div>
+      <div class="report-toolbar__buttons">${dataSource === 'server' ? '<button class="btn btn--soft btn--small report-refresh-btn" id="refreshReport" title="Google Sheet에서 최신 분석 다시 불러오기"><span class="btn-symbol">↻</span><span>최신 분석</span></button>' : ''}<button class="btn btn--soft btn--small" id="copyLink" title="링크 복사"><span class="btn-symbol">↗</span><span>링크 복사</span></button><button class="btn btn--secondary report-export-btn" id="wordButton" title="화면 그대로 Word(.docx) 저장"><span class="btn-symbol">W</span><span>Word(.docx) 저장</span></button><button class="btn btn--primary report-export-btn" id="printButton" title="PDF 저장 또는 인쇄"><span class="btn-symbol">PDF</span><span>PDF·인쇄</span></button></div>
     </div></header>`;
   }
 
@@ -945,6 +945,306 @@
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="90"/><w:defaultTabStop w:val="720"/><w:characterSpacingControl w:val="doNotCompress"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`;
   }
 
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('이미지를 데이터로 변환하지 못했습니다.'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function escapeRegExp(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  async function inlineWordStylesheetAssets(cssText) {
+    const stylesheetUrl = new URL('assets/styles.css', document.baseURI || location.href).href;
+    const sources = [...new Set([...String(cssText || '').matchAll(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g)]
+      .map((match) => match[2])
+      .filter((source) => source && !/^(data:|blob:|#)/i.test(source)))];
+    let output = String(cssText || '');
+    for (const source of sources) {
+      try {
+        const response = await fetch(new URL(source, stylesheetUrl).href, { cache: 'force-cache' });
+        if (!response.ok) continue;
+        const dataUrl = await blobToDataUrl(await response.blob());
+        const pattern = new RegExp(`url\\(\\s*(['"]?)${escapeRegExp(source)}\\1\\s*\\)`, 'g');
+        output = output.replace(pattern, `url("${dataUrl}")`);
+      } catch (error) {
+        console.warn('Word 화면 내보내기용 CSS 이미지를 내장하지 못했습니다.', source, error);
+      }
+    }
+    return output;
+  }
+
+  function utf8Base64(value) {
+    const bytes = new TextEncoder().encode(String(value || ''));
+    let binary = '';
+    const chunk = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+    }
+    return btoa(binary);
+  }
+
+  async function prepareWordVisualClone(source) {
+    const clone = source.cloneNode(true);
+    clone.querySelectorAll('script, .no-print, .report-toolbar, .toast-stack, .modal-backdrop, .review-source-link').forEach((node) => node.remove());
+    clone.querySelectorAll('[id]').forEach((node) => node.removeAttribute('id'));
+    clone.querySelectorAll('a').forEach((anchor) => {
+      const text = document.createElement('span');
+      text.className = anchor.className;
+      text.textContent = anchor.textContent;
+      anchor.replaceWith(text);
+    });
+    clone.querySelectorAll('.practice-solution').forEach((node) => { node.style.display = 'block'; });
+    clone.querySelectorAll('.practice-hint, .practice-feedback, .practice-actions').forEach((node) => { node.style.display = 'none'; });
+    clone.querySelectorAll('.practice-option input').forEach((node) => node.remove());
+    clone.querySelectorAll('.report-table th').forEach((node) => { node.style.position = 'static'; node.style.top = 'auto'; });
+    clone.querySelectorAll('img').forEach((image) => image.removeAttribute('srcset'));
+
+    const images = [...clone.querySelectorAll('img')];
+    for (const image of images) {
+      const raw = image.getAttribute('src') || '';
+      if (!raw || /^data:/i.test(raw)) continue;
+      try {
+        const response = await fetch(new URL(raw, document.baseURI || location.href).href, { cache: 'force-cache' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        image.setAttribute('src', await blobToDataUrl(await response.blob()));
+      } catch (error) {
+        console.warn('Word 화면 내보내기용 이미지를 내장하지 못했습니다.', raw, error);
+        image.setAttribute('src', placeholderAsset(`${image.alt || '문제 이미지'}를 불러오지 못했습니다.`, 1400, 420).dataUrl);
+      }
+    }
+    return clone;
+  }
+
+  function visualExportOverrides(width) {
+    return `
+      html, body { margin: 0 !important; padding: 0 !important; width: ${width}px !important; min-width: ${width}px !important; background: #ffffff !important; overflow: visible !important; }
+      .word-visual-export { width: ${width}px !important; max-width: none !important; margin: 0 !important; background: #ffffff !important; box-shadow: none !important; --brand:#063b8f; --brand-2:#0875ff; --good:#16815f; --bad:#d94857; --blank:#8391a4; --line:#dce6f3; --muted:#68778b; }
+      .word-visual-export, .word-visual-export * { box-sizing: border-box !important; animation: none !important; transition: none !important; caret-color: transparent !important; }
+      .word-visual-export .report-toolbar, .word-visual-export .no-print, .word-visual-export .toast-stack, .word-visual-export .modal-backdrop, .word-visual-export .review-source-link { display: none !important; }
+      .word-visual-export .practice-solution { display: block !important; }
+      .word-visual-export .practice-hint, .word-visual-export .practice-feedback, .word-visual-export .practice-actions { display: none !important; }
+      .word-visual-export .practice-option input { display: none !important; }
+      .word-visual-export .report-table th { position: static !important; top: auto !important; }
+      .word-visual-export svg { display: block !important; max-width: 100% !important; }
+      .word-visual-export .report-section, .word-visual-export .review-card, .word-visual-export .chart-card, .word-visual-export .analysis-card { break-inside: auto !important; page-break-inside: auto !important; }
+      .word-visual-export .word-review-wrap { padding: 31px !important; background: #ffffff !important; border-bottom: 0 !important; }
+      .word-visual-export .word-review-wrap .review-card { margin: 0 !important; }
+      .word-visual-export .word-clinic-heading { padding-bottom: 18px !important; }
+    `;
+  }
+
+  async function renderWordVisualBlock(source, cssText, options = {}) {
+    const width = Number(options.width || 1152);
+    const renderScale = Number(options.scale || 1.4);
+    const clone = await prepareWordVisualClone(source);
+    const measure = document.createElement('div');
+    measure.className = 'report-document word-visual-export';
+    measure.style.cssText = `position:fixed;left:-20000px;top:0;width:${width}px;max-width:none;margin:0;background:#fff;box-shadow:none;visibility:hidden;pointer-events:none;z-index:-1;`;
+    measure.appendChild(clone);
+    document.body.appendChild(measure);
+    try {
+      await Promise.all([...measure.querySelectorAll('img')].map((image) => image.decode ? image.decode().catch(() => {}) : Promise.resolve()));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const height = Math.max(1, Math.ceil(measure.getBoundingClientRect().height));
+      const cleanWrapper = document.createElement('div');
+      cleanWrapper.className = 'report-document word-visual-export';
+      cleanWrapper.setAttribute('style', `width:${width}px;max-width:none;margin:0;background:#fff;box-shadow:none;`);
+      cleanWrapper.appendChild(clone.cloneNode(true));
+      const serialized = new XMLSerializer().serializeToString(cleanWrapper);
+      const safeCss = `${cssText}\n${visualExportOverrides(width)}`.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><foreignObject x="0" y="0" width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml"><style>${safeCss}</style>${serialized}</div></foreignObject></svg>`;
+      const image = new Image();
+      image.decoding = 'async';
+      image.src = `data:image/svg+xml;base64,${utf8Base64(svg)}`;
+      await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = () => reject(new Error('성적 리포트 화면을 이미지로 변환하지 못했습니다.')); });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(width * renderScale));
+      canvas.height = Math.max(1, Math.round(height * renderScale));
+      const ctx = canvas.getContext('2d', { alpha: false });
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(renderScale, renderScale);
+      ctx.drawImage(image, 0, 0, width, height);
+      return { dataUrl: canvas.toDataURL('image/png'), mime: 'image/png', width: canvas.width, height: canvas.height };
+    } finally {
+      measure.remove();
+    }
+  }
+
+  function buildWordVisualBlockSources() {
+    const blocks = [];
+    const dashboard = document.querySelector('#dashboard');
+    const scorecard = document.querySelector('#scorecard');
+    const learning = document.querySelector('#learning-analysis');
+    const questions = document.querySelector('#question-analysis');
+    const clinic = document.querySelector('#wrong-answer-learning');
+    if (dashboard) blocks.push({ source: dashboard, label: '표지', forceNewPage: false });
+    if (scorecard) blocks.push({ source: scorecard, label: '성적표와 그래프', forceNewPage: false });
+    if (learning) blocks.push({ source: learning, label: '강점·취약점', forceNewPage: true });
+    if (questions) blocks.push({ source: questions, label: '문항별 정오표', forceNewPage: true });
+
+    if (clinic) {
+      const reviews = [...clinic.querySelectorAll('.review-card')];
+      const heading = clinic.querySelector('.section-heading');
+      if (reviews.length) {
+        const first = document.createElement('section');
+        first.className = 'report-section word-review-wrap';
+        if (heading) {
+          const headingWrap = document.createElement('div');
+          headingWrap.className = 'word-clinic-heading';
+          headingWrap.appendChild(heading.cloneNode(true));
+          first.appendChild(headingWrap);
+        }
+        first.appendChild(reviews[0].cloneNode(true));
+        blocks.push({ source: first, label: '오답 학습 1', forceNewPage: true });
+        reviews.slice(1).forEach((review, index) => {
+          const wrapper = document.createElement('section');
+          wrapper.className = 'report-section word-review-wrap';
+          wrapper.appendChild(review.cloneNode(true));
+          blocks.push({ source: wrapper, label: `오답 학습 ${index + 2}`, forceNewPage: true });
+        });
+      } else {
+        blocks.push({ source: clinic, label: '오답 학습', forceNewPage: true });
+      }
+    }
+    return blocks;
+  }
+
+  function canvasImage(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error('Word 페이지 이미지를 불러오지 못했습니다.'));
+      image.src = dataUrl;
+    });
+  }
+
+  async function composeWordVisualPages(renderedBlocks, snapshot, exam, updateProgress) {
+    const pageWidth = 1654;
+    const pageHeight = 2339;
+    const side = 70;
+    const top = 64;
+    const footerHeight = 86;
+    const gap = 30;
+    const contentWidth = pageWidth - side * 2;
+    const contentBottom = pageHeight - footerHeight;
+    const pages = [];
+    let canvas;
+    let ctx;
+    let cursorY;
+    let pageNo = 0;
+
+    const openPage = () => {
+      pageNo += 1;
+      canvas = document.createElement('canvas');
+      canvas.width = pageWidth;
+      canvas.height = pageHeight;
+      ctx = canvas.getContext('2d', { alpha: false });
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, pageWidth, pageHeight);
+      cursorY = top;
+    };
+    const closePage = () => {
+      if (!canvas) return;
+      const lineY = pageHeight - 58;
+      ctx.strokeStyle = '#d8e3f0';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(side, lineY); ctx.lineTo(pageWidth - side, lineY); ctx.stroke();
+      ctx.fillStyle = '#063b8f';
+      ctx.font = '700 20px "Malgun Gothic", Arial, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText("Young's Physics", side, pageHeight - 26);
+      ctx.fillStyle = '#7b889a';
+      ctx.font = '500 16px "Malgun Gothic", Arial, sans-serif';
+      const subtitle = `${snapshot.record.name} · ${exam.shortTitle || exam.title}`;
+      ctx.fillText(subtitle.length > 42 ? `${subtitle.slice(0, 42)}…` : subtitle, side + 185, pageHeight - 26);
+      ctx.textAlign = 'right';
+      ctx.fillText(`${pageNo}`, pageWidth - side, pageHeight - 26);
+      pages.push({ dataUrl: canvas.toDataURL('image/png'), mime: 'image/png', width: pageWidth, height: pageHeight });
+      canvas = null; ctx = null;
+    };
+
+    openPage();
+    for (let index = 0; index < renderedBlocks.length; index += 1) {
+      const block = renderedBlocks[index];
+      updateProgress(`Word 페이지 구성 ${index + 1}/${renderedBlocks.length}`);
+      const image = await canvasImage(block.asset.dataUrl);
+      let scale = contentWidth / image.width;
+      let drawWidth = image.width * scale;
+      let drawHeight = image.height * scale;
+      const maxHeight = contentBottom - top - gap;
+      if (drawHeight > maxHeight) {
+        scale = maxHeight / image.height;
+        drawWidth = image.width * scale;
+        drawHeight = image.height * scale;
+      }
+      if (block.forceNewPage && cursorY > top + 2) closePage(), openPage();
+      if (cursorY + drawHeight > contentBottom && cursorY > top + 2) closePage(), openPage();
+      const x = side + (contentWidth - drawWidth) / 2;
+      ctx.drawImage(image, x, cursorY, drawWidth, drawHeight);
+      cursorY += drawHeight + gap;
+    }
+    closePage();
+    return pages;
+  }
+
+  async function buildVisualWordDocx(snapshot, exam, updateProgress) {
+    updateProgress('화면 스타일 준비 중');
+    const cssResponse = await fetch(new URL('assets/styles.css', document.baseURI || location.href).href, { cache: 'force-cache' });
+    if (!cssResponse.ok) throw new Error('성적 리포트 디자인 파일을 불러오지 못했습니다.');
+    const cssText = await inlineWordStylesheetAssets(await cssResponse.text());
+    const sources = buildWordVisualBlockSources();
+    if (!sources.length) throw new Error('Word로 내보낼 성적 리포트 화면이 없습니다.');
+    const rendered = [];
+    for (let index = 0; index < sources.length; index += 1) {
+      updateProgress(`화면 캡처 ${index + 1}/${sources.length}`);
+      rendered.push({
+        ...sources[index],
+        asset: await renderWordVisualBlock(sources[index].source, cssText, { width: 1152, scale: 1.4 })
+      });
+    }
+    const pages = await composeWordVisualPages(rendered, snapshot, exam, updateProgress);
+    updateProgress('Word 문서 조립 중');
+    const media = createDocxMediaStore();
+    const documentParts = [];
+    pages.forEach((page, index) => {
+      const item = media.add(page, `report-page-${index + 1}`);
+      documentParts.push(imageParagraphXml(item, { maxWidth: 746, maxHeight: 1055, after: 0 }));
+      if (index < pages.length - 1) documentParts.push(pageBreakXml());
+    });
+    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>${documentParts.join('')}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="360" w:right="360" w:bottom="360" w:left="360" w:header="180" w:footer="180" w:gutter="0"/><w:cols w:space="720"/><w:docGrid w:linePitch="312"/></w:sectPr></w:body></w:document>`;
+    const mediaItems = media.all();
+    const relationshipRows = [
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>',
+      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>',
+      ...mediaItems.map((item) => `<Relationship Id="${item.rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${xmlEscape(item.target)}"/>`)
+    ].join('');
+    const documentRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationshipRows}</Relationships>`;
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpg" ContentType="image/jpeg"/><Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
+    const packageRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
+    const now = new Date().toISOString();
+    const title = `${snapshot.record.name} · ${exam.title} 화면형 성적 리포트`;
+    const coreProps = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xmlEscape(title)}</dc:title><dc:subject>Young's Physics 화면형 학생 성적 분석</dc:subject><dc:creator>Young's Physics</dc:creator><cp:lastModifiedBy>Young's Physics</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>`;
+    const appProps = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Young's Physics</Application><AppVersion>2.8.0</AppVersion><Company>Young's Physics</Company><LinksUpToDate>false</LinksUpToDate><SharedDoc>false</SharedDoc><HyperlinksChanged>false</HyperlinksChanged></Properties>`;
+    return createStoredZip([
+      { name: '[Content_Types].xml', data: contentTypes },
+      { name: '_rels/.rels', data: packageRels },
+      { name: 'docProps/core.xml', data: coreProps },
+      { name: 'docProps/app.xml', data: appProps },
+      { name: 'word/document.xml', data: documentXml },
+      { name: 'word/_rels/document.xml.rels', data: documentRels },
+      { name: 'word/styles.xml', data: buildStylesXml() },
+      { name: 'word/settings.xml', data: buildSettingsXml() },
+      ...mediaItems.map((item) => ({ name: item.path, data: item.data }))
+    ]);
+  }
+
+
   async function buildWordDocx(snapshot, exam, updateProgress) {
     const media = createDocxMediaStore();
     const documentParts = [];
@@ -1175,7 +1475,7 @@
     const packageRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
     const now = new Date().toISOString();
     const coreProps = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xmlEscape(`${r.name} · ${exam.title} 성적 리포트`)}</dc:title><dc:subject>Young's Physics 학생 성적 분석</dc:subject><dc:creator>Young's Physics</dc:creator><cp:lastModifiedBy>Young's Physics</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>`;
-    const appProps = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Young's Physics</Application><AppVersion>2.7.0</AppVersion><Company>Young's Physics</Company><LinksUpToDate>false</LinksUpToDate><SharedDoc>false</SharedDoc><HyperlinksChanged>false</HyperlinksChanged></Properties>`;
+    const appProps = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Young's Physics</Application><AppVersion>2.8.0</AppVersion><Company>Young's Physics</Company><LinksUpToDate>false</LinksUpToDate><SharedDoc>false</SharedDoc><HyperlinksChanged>false</HyperlinksChanged></Properties>`;
     const entries = [
       { name: '[Content_Types].xml', data: contentTypes },
       { name: '_rels/.rels', data: packageRels },
@@ -1200,7 +1500,16 @@
       if (!currentSnapshot) throw new Error('성적 리포트가 아직 준비되지 않았습니다.');
       const exam = core.getExam(catalog, currentSnapshot.record.examId);
       if (!exam) throw new Error('시험 정보를 찾지 못했습니다.');
-      const bytes = await buildWordDocx(currentSnapshot, exam, (label) => updateButton(label));
+      let bytes;
+      let visualExport = true;
+      try {
+        bytes = await buildVisualWordDocx(currentSnapshot, exam, (label) => updateButton(label));
+      } catch (visualError) {
+        visualExport = false;
+        console.warn('화면형 Word 생성에 실패하여 구조형 Word로 전환합니다.', visualError);
+        updateButton('호환 문서 생성 중');
+        bytes = await buildWordDocx(currentSnapshot, exam, (label) => updateButton(label));
+      }
       updateButton('다운로드 중');
       const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
       const href = URL.createObjectURL(blob);
@@ -1211,7 +1520,9 @@
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(href), 3000);
-      notify('그래프와 오답 문제 이미지를 포함한 Word 문서를 저장했습니다.');
+      notify(visualExport
+        ? '현재 성적 리포트 화면을 고화질 페이지 이미지로 내장한 Word(.docx)를 저장했습니다.'
+        : '호환 모드로 그래프와 오답 문제 이미지를 내장한 Word(.docx)를 저장했습니다.');
     } catch (error) {
       console.error(error);
       alert(`Word 파일을 만들지 못했습니다: ${error.message}`);

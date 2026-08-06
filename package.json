@@ -1,10 +1,7 @@
 {
   "name": "tpl-score-report",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "private": true,
-  "description": "Young's Physics logo-themed TPL student score report site with 1회~10회 exams, 1회~5회 seed records, keyboard answer entry, explanations, and interactive same-method practice with Google Sheets cross-device teacher record synchronization",
-  "scripts": {
-    "test": "node tests/core.test.js && node tests/apps-script.test.cjs",
-    "test:browser": "python tests/smoke.py"
-  }
+  "description": "Young's Physics TPL score report site with server synchronization and screen-faithful embedded-image DOCX export",
+  "scripts": {}
 }
