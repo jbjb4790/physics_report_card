@@ -28,8 +28,12 @@
     return normalizeText(value).replace(/\s+/g, '').toLowerCase();
   }
 
+  function normalizeSchool(value) {
+    return normalizeText(value) || '미입력';
+  }
+
   function studentKey(record) {
-    return `${normalizeKey(record && record.school)}::${normalizeKey(record && record.name)}`;
+    return `${normalizeKey(normalizeSchool(record && record.school))}::${normalizeKey(record && record.name)}`;
   }
 
   function normalizeAnswer(value) {
@@ -485,13 +489,13 @@
       return {
         id: `csv-${Date.now().toString(36)}-${rowIndex}-${Math.random().toString(36).slice(2, 8)}`,
         examId: examIndex >= 0 && row[examIndex] ? normalizeText(row[examIndex]) : defaultExam,
-        school: schoolIndex >= 0 ? normalizeText(row[schoolIndex]) : '',
+        school: normalizeSchool(schoolIndex >= 0 ? row[schoolIndex] : ''),
         name: nameIndex >= 0 ? normalizeText(row[nameIndex]) : '',
         answers: normalizeAnswers(answers, 20),
         createdAt: now,
         updatedAt: now
       };
-    }).filter((record) => record.school && record.name && getExam(catalog, record.examId));
+    }).filter((record) => record.name && getExam(catalog, record.examId));
   }
 
   function makeId(prefix = 'r') {
@@ -508,6 +512,7 @@
     median,
     normalizeText,
     normalizeKey,
+    normalizeSchool,
     studentKey,
     normalizeAnswer,
     normalizeAnswers,

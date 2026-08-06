@@ -3,7 +3,7 @@
  * Google Sheets + Apps Script JSONP backend
  *
  * Script Properties
- * - WRITE_KEY (required): wjddlsdud10
+ * - WRITE_KEY (required): teacher write password
  * - SPREADSHEET_ID (optional): required only for a standalone script
  */
 
@@ -260,9 +260,8 @@ function saveReport_(payloadText) {
   }
 
   var exam = getExam_(input.examId);
-  var school = normalizeText_(input.school);
+  var school = normalizeSchool_(input.school);
   var name = normalizeText_(input.name);
-  if (!school) throw apiError_('SCHOOL_REQUIRED', '학교를 입력해 주세요.');
   if (!name) throw apiError_('NAME_REQUIRED', '학생 이름을 입력해 주세요.');
   var answers = normalizeAnswers_(input.answers, exam.answerCount);
   var key = studentKey_({ school: school, name: name });
@@ -326,9 +325,8 @@ function saveReportsBatch_(payloadText) {
 
     inputs.forEach(function (input) {
       var exam = getExam_(input.examId);
-      var school = normalizeText_(input.school);
+      var school = normalizeSchool_(input.school);
       var name = normalizeText_(input.name);
-      if (!school) throw apiError_('SCHOOL_REQUIRED', '학교를 입력해 주세요.');
       if (!name) throw apiError_('NAME_REQUIRED', '학생 이름을 입력해 주세요.');
       var answers = normalizeAnswers_(input.answers, exam.answerCount);
       var key = studentKey_({ school: school, name: name });
@@ -440,7 +438,11 @@ function readAll_(providedSheet) {
     try {
       var token = String(row[0] || '');
       var record = JSON.parse(String(row[9] || '{}'));
-      if (token && record && record.examId) items.push({ token: token, record: record, row: index + 2 });
+      if (record && record.examId) {
+        record.school = normalizeSchool_(record.school || row[6]);
+        record.name = normalizeText_(record.name || row[7]);
+      }
+      if (token && record && record.examId && record.name) items.push({ token: token, record: record, row: index + 2 });
     } catch (error) {
       console.warn('Reports ' + (index + 2) + '행을 읽지 못했습니다: ' + error.message);
     }
@@ -742,8 +744,12 @@ function normalizeKey_(value) {
   return normalizeText_(value).replace(/\s+/g, '').toLowerCase();
 }
 
+function normalizeSchool_(value) {
+  return normalizeText_(value) || '미입력';
+}
+
 function studentKey_(record) {
-  return normalizeKey_(record && record.school) + '::' + normalizeKey_(record && record.name);
+  return normalizeKey_(normalizeSchool_(record && record.school)) + '::' + normalizeKey_(record && record.name);
 }
 
 function normalizeAnswer_(value) {

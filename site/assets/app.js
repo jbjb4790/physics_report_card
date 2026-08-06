@@ -12,6 +12,9 @@
   const seedRecords = Array.isArray(window.SEED_RECORDS) ? window.SEED_RECORDS : [];
   const app = document.getElementById('app');
   const circled = ['', '①', '②', '③', '④', '⑤'];
+  const normalizeSchool = (value) => typeof core.normalizeSchool === 'function'
+    ? core.normalizeSchool(value)
+    : (core.normalizeText(value) || '미입력');
 
   const state = {
     examId: catalog[0]?.id || '',
@@ -177,7 +180,9 @@
   }
 
   function loadRecords() {
-    return readStoredRecords();
+    return readStoredRecords().map((record) => record && typeof record === 'object'
+      ? { ...record, school: normalizeSchool(record.school) }
+      : record);
   }
 
   function saveRecords(records) {
@@ -194,7 +199,7 @@
           id: record.id || `seed-${index + 1}`,
           examId: record.examId || seedExam.id,
           round: Number(record.round || seedExam.round || 1),
-          school: core.normalizeText(record.school || seedMetadata.schoolFallback || '미입력'),
+          school: normalizeSchool(record.school || seedMetadata.schoolFallback),
           name: core.normalizeText(record.name),
           answers: core.normalizeAnswers(record.answers, seedExam.answerCount),
           createdAt: record.createdAt || '2024-05-20T00:00:00+09:00',
@@ -498,7 +503,8 @@
     const raw = item?.record || item?.report?.record || null;
     if (!raw) return null;
     const currentExam = core.getExam(catalog, raw.examId);
-    if (!currentExam || !raw.school || !raw.name) return null;
+    const normalizedName = core.normalizeText(raw.name);
+    if (!currentExam || !normalizedName) return null;
     const serverId = String(item.token || raw.serverId || raw.id || '').trim();
     if (!serverId) return null;
     return {
@@ -507,8 +513,8 @@
       serverId,
       examId: currentExam.id,
       round: Number(raw.round || currentExam.round || 0),
-      school: core.normalizeText(raw.school),
-      name: core.normalizeText(raw.name),
+      school: normalizeSchool(raw.school),
+      name: normalizedName,
       answers: core.normalizeAnswers(raw.answers, currentExam.answerCount),
       createdAt: raw.createdAt || raw.updatedAt || new Date().toISOString(),
       updatedAt: raw.updatedAt || raw.createdAt || new Date().toISOString(),
@@ -660,7 +666,13 @@
   }
 
   async function saveManyRecordsToServer(records) {
-    const valid = (records || []).filter((record) => record?.school && record?.name && core.getExam(catalog, record.examId));
+    const valid = (records || [])
+      .filter((record) => record?.name && core.getExam(catalog, record.examId))
+      .map((record) => ({
+        ...record,
+        school: normalizeSchool(record.school),
+        name: core.normalizeText(record.name)
+      }));
     if (!valid.length) return { saved: 0, failed: 0 };
     const chunks = [];
     for (let index = 0; index < valid.length; index += 5) chunks.push(valid.slice(index, index + 5));
@@ -793,10 +805,10 @@
   function formHtml() {
     const modeText = state.storageMode === 'apps-script' ? (state.backendStatus === 'connected' ? 'Google Sheet 자동 연결됨' : 'Google Sheet 누적 저장') : '브라우저 저장·링크 백업';
     return `<section id="student-entry" class="card sticky-card anchor-section">
-      <div class="card__head"><div><h2>학생 답안 입력</h2><p>학교·이름·20문항 답안을 입력하세요.</p></div><span class="tag">${modeText}</span></div>
+      <div class="card__head"><div><h2>학생 답안 입력</h2><p>학생 이름과 20문항 답안을 입력하세요. 학교는 선택 입력입니다.</p></div><span class="tag">${modeText}</span></div>
       <div class="card__body">
         <div class="field"><label for="examSelect">시험</label><select id="examSelect" class="select">${catalog.map((item) => `<option value="${escape(item.id)}"${item.id === state.examId ? ' selected' : ''}>${escape(item.title)}</option>`).join('')}</select></div>
-        <div class="form-row"><div class="field"><label for="schoolInput">학교</label><input class="input" id="schoolInput" maxlength="60" placeholder="예: 한국과학영재학교" value="${escape(state.school)}"></div><div class="field"><label for="nameInput">학생 이름</label><input class="input" id="nameInput" maxlength="30" placeholder="예: 김물리" value="${escape(state.name)}"></div></div>
+        <div class="form-row"><div class="field"><label for="schoolInput">학교 <span class="field-optional">선택</span></label><input class="input" id="schoolInput" maxlength="60" placeholder="비워두면 ‘미입력’으로 저장됩니다" value="${escape(state.school)}" aria-describedby="schoolInputHelp"><small id="schoolInputHelp">학교를 입력하지 않아도 제출할 수 있으며, 성적표에는 <strong>미입력</strong>으로 표시됩니다.</small></div><div class="field"><label for="nameInput">학생 이름</label><input class="input" id="nameInput" maxlength="30" placeholder="예: 김물리" value="${escape(state.name)}"></div></div>
         <div class="field"><label for="bulkInput">답안 한 번에 붙여넣기</label><textarea class="textarea" id="bulkInput" placeholder="엑셀 한 행을 그대로 복사해 붙여넣거나, 4 5 4 1 ... 형식으로 입력"></textarea><small>엑셀·Google Sheets에서 복사한 탭 구분 행은 <strong>빈 셀 위치까지 그대로 보존</strong>합니다. 공백 구분 입력에서는 0, X, -를 미기입으로 사용하세요.</small></div>
         <div class="button-row" style="margin-top:0"><button class="btn btn--secondary btn--small" type="button" id="applyBulk">붙여넣기 적용</button><button class="btn btn--soft btn--small" type="button" id="sampleData">예시 입력</button></div>
         <div class="form-divider"></div>
@@ -1048,7 +1060,6 @@
   }
 
   function validateStudent() {
-    if (!state.school.trim()) { toast('학교를 입력해 주세요.', 'error'); document.getElementById('schoolInput')?.focus(); return false; }
     if (!state.name.trim()) { toast('학생 이름을 입력해 주세요.', 'error'); document.getElementById('nameInput')?.focus(); return false; }
     if (config.backendRequiredForSaves && isValidBackendUrl(state.backendUrl)) state.storageMode = 'apps-script';
     if (state.storageMode === 'apps-script') {
@@ -1067,8 +1078,8 @@
     return {
       examId: record.examId,
       round: record.round,
-      school: record.school,
-      name: record.name,
+      school: normalizeSchool(record.school),
+      name: core.normalizeText(record.name),
       answers: record.answers,
       createdAt: record.createdAt
     };
@@ -1122,8 +1133,8 @@
         id: state.editingId || core.makeId('local'),
         examId: state.examId,
         round: exam().round,
-        school: state.school.trim(),
-        name: state.name.trim(),
+        school: normalizeSchool(state.school),
+        name: core.normalizeText(state.name),
         answers: core.normalizeAnswers(state.answers, exam().answerCount),
         createdAt: existing?.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -1244,9 +1255,11 @@
       else { const parsed = JSON.parse(text); incoming = Array.isArray(parsed) ? parsed : parsed.records; }
       if (!Array.isArray(incoming)) throw new Error('학생 기록 배열이 없습니다.');
       const valid = incoming
-        .filter((record) => record?.school && record?.name && core.getExam(catalog, record.examId))
+        .filter((record) => record?.name && core.getExam(catalog, record.examId))
         .map((record) => ({
           ...record,
+          school: normalizeSchool(record.school),
+          name: core.normalizeText(record.name),
           answers: core.normalizeAnswers(record.answers, core.getExam(catalog, record.examId).answerCount),
           createdAt: record.createdAt || new Date().toISOString()
         }));
