@@ -3,7 +3,7 @@
  * Google Sheets + Apps Script JSONP backend
  *
  * Script Properties
- * - WRITE_KEY (required): teacher write password
+ * - WRITE_KEY (required): wjddlsdud10
  * - SPREADSHEET_ID (optional): required only for a standalone script
  */
 
