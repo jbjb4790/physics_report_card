@@ -161,11 +161,14 @@ function doGet(e) {
     } else if (action === 'save') {
       assertWriteKey_(e.parameter.writeKey);
       response = saveReport_(e.parameter.payload);
+    } else if (action === 'saveBatch') {
+      assertWriteKey_(e.parameter.writeKey);
+      response = saveReportsBatch_(e.parameter.payload);
     } else if (action === 'get') {
       response = getReport_(e.parameter.id);
     } else if (action === 'list') {
       assertWriteKey_(e.parameter.writeKey);
-      response = listReports_(e.parameter.limit);
+      response = listReports_(e.parameter.limit, e.parameter.offset);
     } else if (action === 'delete') {
       assertWriteKey_(e.parameter.writeKey);
       response = deleteReport_(e.parameter.id);
@@ -298,6 +301,85 @@ function saveReport_(payloadText) {
   return { ok: true, token: token, id: token, report: buildSnapshot_(record) };
 }
 
+
+function saveReportsBatch_(payloadText) {
+  var inputs;
+  try {
+    inputs = JSON.parse(String(payloadText || '[]'));
+  } catch (error) {
+    throw apiError_('INVALID_PAYLOAD', '학생 일괄 데이터 JSON을 읽지 못했습니다.');
+  }
+  if (!Array.isArray(inputs)) throw apiError_('INVALID_PAYLOAD', '학생 일괄 데이터는 배열이어야 합니다.');
+  if (!inputs.length) return { ok: true, count: 0, saved: [] };
+  if (inputs.length > 10) throw apiError_('BATCH_TOO_LARGE', '한 번에 최대 10명까지 저장할 수 있습니다.');
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  var saved = [];
+  try {
+    var sheet = sheet_();
+    var items = readAll_(sheet);
+    var byStudentExam = {};
+    items.forEach(function (item) {
+      byStudentExam[item.record.examId + '|' + studentKey_(item.record)] = item;
+    });
+
+    inputs.forEach(function (input) {
+      var exam = getExam_(input.examId);
+      var school = normalizeText_(input.school);
+      var name = normalizeText_(input.name);
+      if (!school) throw apiError_('SCHOOL_REQUIRED', '학교를 입력해 주세요.');
+      if (!name) throw apiError_('NAME_REQUIRED', '학생 이름을 입력해 주세요.');
+      var answers = normalizeAnswers_(input.answers, exam.answerCount);
+      var key = studentKey_({ school: school, name: name });
+      var mapKey = exam.id + '|' + key;
+      var found = byStudentExam[mapKey] || null;
+      var now = new Date().toISOString();
+      var token = found ? found.token : Utilities.getUuid().replace(/-/g, '');
+      var createdAt = found ? found.record.createdAt : (input.createdAt || now);
+      var record = {
+        id: token,
+        serverId: token,
+        examId: exam.id,
+        round: exam.round,
+        school: school,
+        name: name,
+        answers: answers,
+        createdAt: createdAt,
+        updatedAt: now
+      };
+      var row = [
+        token, createdAt, now, exam.id, exam.round, key, school, name,
+        JSON.stringify(answers), JSON.stringify(record)
+      ];
+
+      if (found) {
+        sheet.getRange(found.row, 1, 1, HEADERS.length).setValues([row]);
+        found.token = token;
+        found.record = record;
+      } else {
+        sheet.appendRow(row);
+        found = { token: token, record: record, row: sheet.getLastRow() };
+        byStudentExam[mapKey] = found;
+      }
+
+      saved.push({
+        token: token,
+        id: token,
+        examId: exam.id,
+        round: exam.round,
+        school: school,
+        name: name,
+        createdAt: createdAt,
+        updatedAt: now
+      });
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  return { ok: true, count: saved.length, saved: saved };
+}
+
 function getReport_(id) {
   var token = String(id || '').trim();
   if (!/^[A-Fa-f0-9]{24,64}$/.test(token)) throw apiError_('INVALID_ID', '학생 결과 링크의 ID가 올바르지 않습니다.');
@@ -306,12 +388,23 @@ function getReport_(id) {
   return { ok: true, token: token, dynamic: true, report: buildSnapshot_(item.record) };
 }
 
-function listReports_(limitValue) {
+function listReports_(limitValue, offsetValue) {
   var limit = Math.max(1, Math.min(500, Number(limitValue || 100)));
-  var items = readAll_().sort(function (a, b) {
+  var offset = Math.max(0, Number(offsetValue || 0));
+  var all = readAll_().sort(function (a, b) {
     return String(b.record.updatedAt || b.record.createdAt).localeCompare(String(a.record.updatedAt || a.record.createdAt));
-  }).slice(0, limit);
-  return { ok: true, reports: items.map(function (item) { return { token: item.token, record: enrich_(item.record) }; }) };
+  });
+  var items = all.slice(offset, offset + limit);
+  var nextOffset = offset + items.length;
+  return {
+    ok: true,
+    total: all.length,
+    offset: offset,
+    limit: limit,
+    nextOffset: nextOffset,
+    hasMore: nextOffset < all.length,
+    reports: items.map(function (item) { return { token: item.token, record: enrich_(item.record) }; })
+  };
 }
 
 function deleteReport_(id) {

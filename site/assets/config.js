@@ -5,6 +5,10 @@ window.APP_CONFIG = {
   // WRITE_KEY는 절대로 이 파일에 넣지 않습니다.
   backendUrl: 'https://script.google.com/macros/s/AKfycbx3PkumTW3dFg1nvXpgcp3o0Y3NX7YfrcMyDUtYB_uMVAKsxe6SDPWi0clMBR-SPwkwzA/exec',
   backendAutoConnect: true,
+  backendRequiredForSaves: true,
+  syncServerRecordsOnLoad: true,
+  serverSyncPageSize: 250,
+  serverSyncIntervalMs: 120000,
   backendSetupParam: 'appsScript',
   backendTimeoutMs: 15000,
   reportHashKey: 'report',
