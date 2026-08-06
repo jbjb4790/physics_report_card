@@ -488,25 +488,737 @@
     let stack=document.querySelector('.toast-stack'); if(!stack){stack=document.createElement('div');stack.className='toast-stack no-print';document.body.appendChild(stack);} stack.appendChild(node); setTimeout(()=>node.remove(),3200);
   }
 
-  async function imageToDataUrl(src) {
-    const response=await fetch(src); if(!response.ok)throw new Error('이미지 로드 실패');
-    const blob=await response.blob();
-    return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(blob);});
+  function bytesToBase64(bytes) {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  function base64ToBytes(value) {
+    const binary = atob(String(value || ''));
+    return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  }
+
+  function xmlEscape(value) {
+    return String(value == null ? '' : value)
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  function loadRasterImage(blob) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => { URL.revokeObjectURL(url); resolve(image); };
+      image.onerror = () => { URL.revokeObjectURL(url); reject(new Error('이미지를 해석하지 못했습니다.')); };
+      image.src = url;
+    });
+  }
+
+  function placeholderAsset(message, width = 1400, height = 300) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#f4f7fb';
+    ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(4, 4, width - 8, height - 8);
+    ctx.fillStyle = '#445269';
+    ctx.font = '700 32px "Malgun Gothic", Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(message || '이미지를 불러오지 못했습니다.', width / 2, height / 2);
+    return { dataUrl: canvas.toDataURL('image/png'), mime: 'image/png', width, height };
+  }
+
+  async function imageToWordAsset(src, options = {}) {
+    const absolute = new URL(src, document.baseURI || location.href).href;
+    const response = await fetch(absolute, { cache: 'force-cache' });
+    if (!response.ok) throw new Error(`이미지 로드 실패 (${response.status})`);
+    const image = await loadRasterImage(await response.blob());
+    const sourceWidth = Math.max(1, Number(image.naturalWidth || image.width || 1));
+    const sourceHeight = Math.max(1, Number(image.naturalHeight || image.height || 1));
+    const maxWidth = Number(options.maxWidth || 1800);
+    const maxHeight = Number(options.maxHeight || 2400);
+    const ratio = Math.min(1, maxWidth / sourceWidth, maxHeight / sourceHeight);
+    const width = Math.max(1, Math.round(sourceWidth * ratio));
+    const height = Math.max(1, Math.round(sourceHeight * ratio));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(image, 0, 0, width, height);
+    const useJpeg = options.format === 'jpeg';
+    return {
+      dataUrl: canvas.toDataURL(useJpeg ? 'image/jpeg' : 'image/png', useJpeg ? Number(options.quality || 0.9) : 1),
+      mime: useJpeg ? 'image/jpeg' : 'image/png',
+      width,
+      height
+    };
+  }
+
+  function makeChartCanvas(width = 1400, height = 720) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.textBaseline = 'middle';
+    return { canvas, ctx };
+  }
+
+  function chartAsset(canvas) {
+    return { dataUrl: canvas.toDataURL('image/png'), mime: 'image/png', width: canvas.width, height: canvas.height };
+  }
+
+  function drawChartTitle(ctx, title, subtitle, width) {
+    ctx.fillStyle = '#16345d';
+    ctx.font = '800 38px "Malgun Gothic", Arial, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(title, 62, 60);
+    ctx.fillStyle = '#68778b';
+    ctx.font = '500 22px "Malgun Gothic", Arial, sans-serif';
+    ctx.fillText(subtitle, 62, 102);
+    ctx.strokeStyle = '#dbe4ef';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(62, 132);
+    ctx.lineTo(width - 62, 132);
+    ctx.stroke();
+  }
+
+  function drawRoundedRect(ctx, x, y, width, height, radius, fill) {
+    const r = Math.min(radius, width / 2, height / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + width, y, x + width, y + height, r);
+    ctx.arcTo(x + width, y + height, x, y + height, r);
+    ctx.arcTo(x, y + height, x, y, r);
+    ctx.arcTo(x, y, x + width, y, r);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+
+  function scoreComparisonChart(snapshot) {
+    const { canvas, ctx } = makeChartCanvas(1400, 760);
+    drawChartTitle(ctx, '점수 기준 비교', '학생 점수와 동일 시험 집단의 주요 통계', canvas.width);
+    const c = snapshot.cohort || {};
+    const rows = [
+      ['학생 점수', Number(snapshot.record.score || 0), '#0875ff'],
+      ['전체 평균', Number(c.average || 0), '#7fa6d8'],
+      ['중앙값', Number(c.median || 0), '#a8b8ca'],
+      ['최고점', Number(c.topScore || snapshot.record.score || 0), '#063b8f']
+    ];
+    const left = 105, right = 70, top = 185, bottom = 110;
+    const plotW = canvas.width - left - right;
+    const plotH = canvas.height - top - bottom;
+    ctx.strokeStyle = '#dbe4ef';
+    ctx.lineWidth = 2;
+    [0, 25, 50, 75, 100].forEach((value) => {
+      const y = top + plotH - (value / 100) * plotH;
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(canvas.width - right, y); ctx.stroke();
+      ctx.fillStyle = '#718096'; ctx.font = '500 20px Arial, sans-serif'; ctx.textAlign = 'right'; ctx.fillText(String(value), left - 18, y);
+    });
+    const slot = plotW / rows.length;
+    const barW = Math.min(145, slot * 0.48);
+    rows.forEach(([label, raw, color], index) => {
+      const value = Math.max(0, Math.min(100, raw));
+      const x = left + slot * index + (slot - barW) / 2;
+      const h = (value / 100) * plotH;
+      const y = top + plotH - h;
+      drawRoundedRect(ctx, x, y, barW, h, 14, color);
+      ctx.fillStyle = '#16345d'; ctx.font = '800 25px Arial, sans-serif'; ctx.textAlign = 'center'; ctx.fillText(fmt(raw), x + barW / 2, Math.max(top + 18, y - 25));
+      ctx.fillStyle = '#42516a'; ctx.font = '700 23px "Malgun Gothic", Arial, sans-serif'; ctx.fillText(label, x + barW / 2, canvas.height - 62);
+    });
+    return chartAsset(canvas);
+  }
+
+  function histogramChart(snapshot) {
+    const { canvas, ctx } = makeChartCanvas(1400, 760);
+    drawChartTitle(ctx, '전체 점수 분포', '진한 막대는 학생 점수가 속한 점수 구간', canvas.width);
+    const bins = Array.isArray(snapshot.cohort?.distribution) ? snapshot.cohort.distribution : [];
+    const data = bins.length ? bins : [{ label: '전체', min: -25, max: 100, count: 1 }];
+    const left = 90, right = 65, top = 185, bottom = 125;
+    const plotW = canvas.width - left - right;
+    const plotH = canvas.height - top - bottom;
+    const gap = 22;
+    const barW = Math.max(35, (plotW - gap * (data.length - 1)) / data.length);
+    const maxCount = Math.max(1, ...data.map((item) => Number(item.count || 0)));
+    const score = Number(snapshot.record.score || 0);
+    let selected = data.findIndex((item) => score >= Number(item.min) && score <= Number(item.max));
+    if (selected < 0) selected = 0;
+    ctx.strokeStyle = '#dbe4ef'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(left, top + plotH); ctx.lineTo(canvas.width - right, top + plotH); ctx.stroke();
+    data.forEach((item, index) => {
+      const count = Number(item.count || 0);
+      const h = (count / maxCount) * plotH;
+      const x = left + index * (barW + gap);
+      const y = top + plotH - h;
+      drawRoundedRect(ctx, x, y, barW, Math.max(4, h), 10, index === selected ? '#063b8f' : '#b8c4d1');
+      ctx.fillStyle = '#34455f'; ctx.font = '800 23px Arial, sans-serif'; ctx.textAlign = 'center'; ctx.fillText(String(count), x + barW / 2, Math.max(top + 15, y - 24));
+      ctx.fillStyle = '#59687b'; ctx.font = '600 18px "Malgun Gothic", Arial, sans-serif'; ctx.fillText(String(item.label || ''), x + barW / 2, canvas.height - 65);
+    });
+    return chartAsset(canvas);
+  }
+
+  function domainChart(snapshot, exam) {
+    const rows = Array.isArray(snapshot.cohort?.domainAverages) && snapshot.cohort.domainAverages.length
+      ? snapshot.cohort.domainAverages
+      : (snapshot.record.domainStats || []).map((item) => ({ domain: item.domain, average: item.accuracy, student: item.accuracy }));
+    const height = Math.max(600, 190 + rows.length * 92);
+    const { canvas, ctx } = makeChartCanvas(1400, height);
+    drawChartTitle(ctx, '대단원별 정답률', '파란색은 학생, 회색은 전체 평균', canvas.width);
+    const studentMap = new Map((snapshot.record.domainStats || []).map((item) => [item.domain, Number(item.accuracy || 0)]));
+    const labelX = 62, barX = 355, barW = 850, valueX = 1260;
+    rows.forEach((item, index) => {
+      const y = 190 + index * 92;
+      const student = Number(item.student == null ? studentMap.get(item.domain) || 0 : item.student);
+      const average = Number(item.average || 0);
+      ctx.fillStyle = '#263b5a'; ctx.font = '700 22px "Malgun Gothic", Arial, sans-serif'; ctx.textAlign = 'left';
+      const label = String(item.domain || '기타');
+      ctx.fillText(label.length > 15 ? `${label.slice(0, 15)}…` : label, labelX, y + 26);
+      drawRoundedRect(ctx, barX, y, barW, 25, 12, '#e7edf5');
+      drawRoundedRect(ctx, barX, y, barW * Math.max(0, Math.min(100, student)) / 100, 25, 12, '#0875ff');
+      drawRoundedRect(ctx, barX, y + 38, barW, 13, 7, '#edf1f5');
+      drawRoundedRect(ctx, barX, y + 38, barW * Math.max(0, Math.min(100, average)) / 100, 13, 7, '#aab8c8');
+      ctx.fillStyle = '#063b8f'; ctx.font = '800 22px Arial, sans-serif'; ctx.textAlign = 'right'; ctx.fillText(`${fmt(student)}%`, valueX, y + 13);
+      ctx.fillStyle = '#6b7788'; ctx.font = '600 18px Arial, sans-serif'; ctx.fillText(`${fmt(average)}%`, valueX, y + 47);
+    });
+    return chartAsset(canvas);
+  }
+
+  function trendChart(snapshot) {
+    const { canvas, ctx } = makeChartCanvas(1400, 720);
+    drawChartTitle(ctx, '이전 회차 점수 추세', '현재 성적표 회차까지 동일 학생 기록을 연결', canvas.width);
+    const history = (snapshot.history || []).slice().sort((a, b) => Number(a.round || 0) - Number(b.round || 0));
+    if (history.length < 2) {
+      ctx.fillStyle = '#eef4fb'; drawRoundedRect(ctx, 135, 220, 1130, 280, 22, '#eef4fb');
+      ctx.fillStyle = '#2f4767'; ctx.font = '800 34px "Malgun Gothic", Arial, sans-serif'; ctx.textAlign = 'center'; ctx.fillText('이전 회차 기록이 아직 없습니다.', 700, 325);
+      ctx.fillStyle = '#6a788b'; ctx.font = '500 23px "Malgun Gothic", Arial, sans-serif'; ctx.fillText('같은 학교와 이름으로 다른 회차를 저장하면 자동으로 연결됩니다.', 700, 390);
+      return chartAsset(canvas);
+    }
+    const left = 105, right = 65, top = 190, bottom = 110;
+    const plotW = canvas.width - left - right;
+    const plotH = canvas.height - top - bottom;
+    const minScore = -25, maxScore = 100;
+    const x = (index) => left + (history.length === 1 ? plotW / 2 : index * plotW / (history.length - 1));
+    const y = (score) => top + plotH - ((Number(score) - minScore) / (maxScore - minScore)) * plotH;
+    [0, 25, 50, 75, 100].forEach((value) => {
+      const yy = y(value);
+      ctx.strokeStyle = '#dbe4ef'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(left, yy); ctx.lineTo(canvas.width - right, yy); ctx.stroke();
+      ctx.fillStyle = '#718096'; ctx.font = '500 20px Arial, sans-serif'; ctx.textAlign = 'right'; ctx.fillText(String(value), left - 18, yy);
+    });
+    ctx.strokeStyle = '#0875ff'; ctx.lineWidth = 7; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath();
+    history.forEach((item, index) => { if (index === 0) ctx.moveTo(x(index), y(item.score)); else ctx.lineTo(x(index), y(item.score)); });
+    ctx.stroke();
+    history.forEach((item, index) => {
+      ctx.fillStyle = '#063b8f'; ctx.beginPath(); ctx.arc(x(index), y(item.score), 11, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#063b8f'; ctx.font = '800 23px Arial, sans-serif'; ctx.textAlign = 'center'; ctx.fillText(fmt(item.score), x(index), y(item.score) - 32);
+      ctx.fillStyle = '#53647a'; ctx.font = '700 21px "Malgun Gothic", Arial, sans-serif'; ctx.fillText(`${item.round}회`, x(index), canvas.height - 62);
+    });
+    return chartAsset(canvas);
+  }
+
+  function crc32(bytes) {
+    if (!crc32.table) {
+      crc32.table = Array.from({ length: 256 }, (_, index) => {
+        let value = index;
+        for (let bit = 0; bit < 8; bit += 1) value = (value & 1) ? (0xEDB88320 ^ (value >>> 1)) : (value >>> 1);
+        return value >>> 0;
+      });
+    }
+    let crc = 0xFFFFFFFF;
+    for (let index = 0; index < bytes.length; index += 1) crc = crc32.table[(crc ^ bytes[index]) & 0xFF] ^ (crc >>> 8);
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  function concatBytes(parts) {
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const output = new Uint8Array(total);
+    let offset = 0;
+    parts.forEach((part) => { output.set(part, offset); offset += part.length; });
+    return output;
+  }
+
+  function littleEndian(size, value) {
+    const bytes = new Uint8Array(size);
+    const view = new DataView(bytes.buffer);
+    if (size === 2) view.setUint16(0, value & 0xFFFF, true);
+    else view.setUint32(0, value >>> 0, true);
+    return bytes;
+  }
+
+  function dosDateTime(date = new Date()) {
+    const year = Math.max(1980, date.getFullYear());
+    const time = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+    const day = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+    return { time, date: day };
+  }
+
+  function createStoredZip(entries) {
+    const encoder = new TextEncoder();
+    const locals = [];
+    const centrals = [];
+    let offset = 0;
+    const stamp = dosDateTime();
+    entries.forEach((entry) => {
+      const name = encoder.encode(entry.name);
+      const data = entry.data instanceof Uint8Array ? entry.data : encoder.encode(String(entry.data || ''));
+      const crc = crc32(data);
+      const local = concatBytes([
+        littleEndian(4, 0x04034B50), littleEndian(2, 20), littleEndian(2, 0x0800), littleEndian(2, 0),
+        littleEndian(2, stamp.time), littleEndian(2, stamp.date), littleEndian(4, crc), littleEndian(4, data.length), littleEndian(4, data.length),
+        littleEndian(2, name.length), littleEndian(2, 0), name, data
+      ]);
+      locals.push(local);
+      const central = concatBytes([
+        littleEndian(4, 0x02014B50), littleEndian(2, 20), littleEndian(2, 20), littleEndian(2, 0x0800), littleEndian(2, 0),
+        littleEndian(2, stamp.time), littleEndian(2, stamp.date), littleEndian(4, crc), littleEndian(4, data.length), littleEndian(4, data.length),
+        littleEndian(2, name.length), littleEndian(2, 0), littleEndian(2, 0), littleEndian(2, 0), littleEndian(2, 0), littleEndian(4, 0), littleEndian(4, offset), name
+      ]);
+      centrals.push(central);
+      offset += local.length;
+    });
+    const centralSize = centrals.reduce((sum, part) => sum + part.length, 0);
+    const end = concatBytes([
+      littleEndian(4, 0x06054B50), littleEndian(2, 0), littleEndian(2, 0), littleEndian(2, entries.length), littleEndian(2, entries.length),
+      littleEndian(4, centralSize), littleEndian(4, offset), littleEndian(2, 0)
+    ]);
+    return concatBytes([...locals, ...centrals, end]);
+  }
+
+  function runXml(text, options = {}) {
+    const props = [];
+    if (options.bold) props.push('<w:b/>');
+    if (options.italic) props.push('<w:i/>');
+    if (options.color) props.push(`<w:color w:val="${xmlEscape(options.color.replace('#', ''))}"/>`);
+    if (options.size) props.push(`<w:sz w:val="${Math.round(Number(options.size) * 2)}"/><w:szCs w:val="${Math.round(Number(options.size) * 2)}"/>`);
+    if (options.font) props.push(`<w:rFonts w:ascii="${xmlEscape(options.font)}" w:hAnsi="${xmlEscape(options.font)}" w:eastAsia="${xmlEscape(options.font)}"/>`);
+    if (options.highlight) props.push(`<w:shd w:fill="${xmlEscape(options.highlight.replace('#', ''))}"/>`);
+    props.push('<w:lang w:val="ko-KR" w:eastAsia="ko-KR"/>');
+    const chunks = String(text == null ? '' : text).split(/\n/);
+    const body = chunks.map((chunk, index) => `${index ? '<w:br/>' : ''}<w:t xml:space="preserve">${xmlEscape(chunk)}</w:t>`).join('');
+    return `<w:r><w:rPr>${props.join('')}</w:rPr>${body}</w:r>`;
+  }
+
+  function paragraphXml(content, options = {}) {
+    const runs = Array.isArray(content) ? content.join('') : runXml(content, options.run || options);
+    const pPr = [];
+    if (options.style) pPr.push(`<w:pStyle w:val="${xmlEscape(options.style)}"/>`);
+    if (options.align) pPr.push(`<w:jc w:val="${xmlEscape(options.align)}"/>`);
+    if (options.keepNext) pPr.push('<w:keepNext/>');
+    if (options.keepLines) pPr.push('<w:keepLines/>');
+    if (options.pageBreakBefore) pPr.push('<w:pageBreakBefore/>');
+    const before = Math.round(Number(options.before || 0) * 20);
+    const after = Math.round(Number(options.after == null ? 6 : options.after) * 20);
+    const line = Math.round(Number(options.line || 1.25) * 240);
+    pPr.push(`<w:spacing w:before="${before}" w:after="${after}" w:line="${line}" w:lineRule="auto"/>`);
+    if (options.indentLeft || options.indentFirst) pPr.push(`<w:ind w:left="${Math.round(Number(options.indentLeft || 0) * 20)}" w:firstLine="${Math.round(Number(options.indentFirst || 0) * 20)}"/>`);
+    if (options.shading) pPr.push(`<w:shd w:val="clear" w:color="auto" w:fill="${xmlEscape(options.shading.replace('#', ''))}"/>`);
+    return `<w:p><w:pPr>${pPr.join('')}</w:pPr>${runs}</w:p>`;
+  }
+
+  function pageBreakXml() {
+    return '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+  }
+
+  function cellXml(content, options = {}) {
+    const tcPr = [];
+    if (options.width) tcPr.push(`<w:tcW w:w="${Math.round(options.width)}" w:type="dxa"/>`);
+    if (options.shading) tcPr.push(`<w:shd w:val="clear" w:color="auto" w:fill="${xmlEscape(options.shading.replace('#', ''))}"/>`);
+    if (options.vAlign) tcPr.push(`<w:vAlign w:val="${xmlEscape(options.vAlign)}"/>`);
+    if (options.gridSpan) tcPr.push(`<w:gridSpan w:val="${Math.round(options.gridSpan)}"/>`);
+    const margins = options.margins || { top: 100, right: 120, bottom: 100, left: 120 };
+    tcPr.push(`<w:tcMar><w:top w:w="${margins.top}" w:type="dxa"/><w:right w:w="${margins.right}" w:type="dxa"/><w:bottom w:w="${margins.bottom}" w:type="dxa"/><w:left w:w="${margins.left}" w:type="dxa"/></w:tcMar>`);
+    const raw = String(content == null ? '' : content);
+    const body = Array.isArray(content) ? content.join('') : (/^\s*<w:/.test(raw) ? raw : paragraphXml(content, options.paragraph || {}));
+    return `<w:tc><w:tcPr>${tcPr.join('')}</w:tcPr>${body || paragraphXml('')}</w:tc>`;
+  }
+
+  function rowXml(cells, options = {}) {
+    return `<w:tr><w:trPr>${options.header ? '<w:tblHeader/>' : ''}${options.cantSplit ? '<w:cantSplit/>' : ''}</w:trPr>${cells.join('')}</w:tr>`;
+  }
+
+  function tableXml(rows, widths = [], options = {}) {
+    const color = (options.borderColor || 'C9D4E2').replace('#', '');
+    const size = Number(options.borderSize || 8);
+    const borders = ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map((side) => `<w:${side} w:val="single" w:sz="${size}" w:space="0" w:color="${color}"/>`).join('');
+    const grid = widths.map((width) => `<w:gridCol w:w="${Math.round(width)}"/>`).join('');
+    return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblLayout w:type="fixed"/><w:tblBorders>${borders}</w:tblBorders><w:tblCellMar><w:top w:w="80" w:type="dxa"/><w:left w:w="100" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/><w:right w:w="100" w:type="dxa"/></w:tblCellMar></w:tblPr>${grid ? `<w:tblGrid>${grid}</w:tblGrid>` : ''}${rows.join('')}</w:tbl>`;
+  }
+
+  function createDocxMediaStore() {
+    const items = [];
+    return {
+      add(asset, preferredName = 'image') {
+        const match = String(asset.dataUrl || '').match(/^data:([^;,]+);base64,(.*)$/s);
+        if (!match) throw new Error('Word 이미지 데이터 형식이 올바르지 않습니다.');
+        const mime = match[1].toLowerCase();
+        const extension = mime.includes('jpeg') ? 'jpg' : 'png';
+        const index = items.length + 1;
+        const safe = String(preferredName || 'image').replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 36) || 'image';
+        const item = {
+          rId: `rId${index + 2}`,
+          docPrId: index,
+          path: `word/media/${String(index).padStart(3, '0')}-${safe}.${extension}`,
+          target: `media/${String(index).padStart(3, '0')}-${safe}.${extension}`,
+          mime,
+          data: base64ToBytes(match[2]),
+          width: Number(asset.width || 1),
+          height: Number(asset.height || 1),
+          name: `${safe}.${extension}`
+        };
+        items.push(item);
+        return item;
+      },
+      all() { return items.slice(); }
+    };
+  }
+
+  function imageParagraphXml(item, options = {}) {
+    const maxWidth = Number(options.maxWidth || 650);
+    const maxHeight = Number(options.maxHeight || 820);
+    const ratio = Math.min(1, maxWidth / item.width, maxHeight / item.height);
+    const width = Math.max(1, Math.round(item.width * ratio));
+    const height = Math.max(1, Math.round(item.height * ratio));
+    const cx = Math.round(width * 9525);
+    const cy = Math.round(height * 9525);
+    const drawing = `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${item.docPrId}" name="${xmlEscape(item.name)}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${item.docPrId}" name="${xmlEscape(item.name)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${item.rId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+    return paragraphXml([drawing], { align: options.align || 'center', after: options.after == null ? 8 : options.after, keepLines: true });
+  }
+
+  function headingXml(number, english, title, description) {
+    return [
+      paragraphXml(`${String(number).padStart(2, '0')} · ${english}`, { bold: true, color: '#0875ff', size: 9, after: 2, keepNext: true }),
+      paragraphXml(title, { style: 'Heading1', keepNext: true, after: 4 }),
+      paragraphXml(description, { color: '#64748b', size: 9, after: 12 })
+    ].join('');
+  }
+
+  function metricCell(label, value, note, shading = '#F5F8FC', valueColor = '#063B8F', width = 3260) {
+    return cellXml([
+      paragraphXml(label, { bold: true, color: '#64748b', size: 8, after: 3 }),
+      paragraphXml(value, { bold: true, color: valueColor, size: 18, after: 3 }),
+      paragraphXml(note, { color: '#68768a', size: 7.5, after: 0 })
+    ], { width, shading, vAlign: 'center' });
+  }
+
+  function boxXml(title, body, options = {}) {
+    const width = Number(options.width || 9800);
+    const shading = options.shading || '#F6F9FD';
+    const titleColor = options.titleColor || '#16345D';
+    return tableXml([
+      rowXml([cellXml([
+        paragraphXml(title, { bold: true, color: titleColor, size: 11, after: 5, keepNext: true }),
+        paragraphXml(body, { color: '#26364d', size: 9, after: 0 })
+      ], { width, shading })], { cantSplit: false })
+    ], [width], { borderColor: options.borderColor || '#CBD7E6', borderSize: options.borderSize || 9 });
+  }
+
+  function bulletParagraphs(items, options = {}) {
+    return (items || []).map((item) => paragraphXml([
+      runXml('• ', { bold: true, color: options.color || '#0875ff', size: options.size || 9 }),
+      runXml(item, { color: options.textColor || '#26364d', size: options.size || 9 })
+    ], { indentLeft: 10, after: 4 })).join('');
+  }
+
+  function buildStylesXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Malgun Gothic" w:hAnsi="Malgun Gothic" w:eastAsia="맑은 고딕"/><w:sz w:val="20"/><w:szCs w:val="20"/><w:lang w:val="ko-KR" w:eastAsia="ko-KR"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="300" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:jc w:val="center"/><w:spacing w:before="180" w:after="180"/></w:pPr><w:rPr><w:rFonts w:ascii="Malgun Gothic" w:hAnsi="Malgun Gothic" w:eastAsia="맑은 고딕"/><w:b/><w:color w:val="063B8F"/><w:sz w:val="56"/><w:szCs w:val="56"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="180" w:after="100"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:rFonts w:ascii="Malgun Gothic" w:hAnsi="Malgun Gothic" w:eastAsia="맑은 고딕"/><w:b/><w:color w:val="063B8F"/><w:sz w:val="36"/><w:szCs w:val="36"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="140" w:after="80"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:rFonts w:ascii="Malgun Gothic" w:hAnsi="Malgun Gothic" w:eastAsia="맑은 고딕"/><w:b/><w:color w:val="17335B"/><w:sz w:val="26"/><w:szCs w:val="26"/></w:rPr></w:style></w:styles>`;
+  }
+
+  function buildSettingsXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="90"/><w:defaultTabStop w:val="720"/><w:characterSpacingControl w:val="doNotCompress"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`;
+  }
+
+  async function buildWordDocx(snapshot, exam, updateProgress) {
+    const media = createDocxMediaStore();
+    const documentParts = [];
+    let stage = 0;
+    const setStage = (text) => { stage += 1; updateProgress?.(text, stage); };
+
+    setStage('로고 준비');
+    let logoAsset;
+    let markAsset;
+    try { logoAsset = await imageToWordAsset('assets/youngs-physics-logo.png', { maxWidth: 900, maxHeight: 360 }); }
+    catch (error) { console.warn(error); logoAsset = placeholderAsset("Young's Physics", 900, 260); }
+    try { markAsset = await imageToWordAsset('assets/youngs-physics-mark.png', { maxWidth: 500, maxHeight: 500 }); }
+    catch (error) { console.warn(error); markAsset = placeholderAsset('YP', 360, 360); }
+    const logo = media.add(logoAsset, 'youngs-physics-logo');
+    const mark = media.add(markAsset, 'youngs-physics-mark');
+
+    const c = snapshot.cohort || {};
+    const r = snapshot.record;
+    const total = Number(c.total || 0);
+    const topRate = c.rank && total ? core.round(Number(c.rank) / total * 100, 1) : null;
+    const sourceText = sourceLabel(snapshot);
+
+    documentParts.push(imageParagraphXml(logo, { maxWidth: 290, maxHeight: 110, after: 10 }));
+    documentParts.push(paragraphXml("YOUNG'S PHYSICS · PERSONAL SCORE REPORT", { bold: true, color: '#0875ff', size: 9, align: 'center', after: 6 }));
+    documentParts.push(paragraphXml(`${r.name} 학생`, { style: 'Title', after: 8 }));
+    documentParts.push(paragraphXml(`${r.school}  |  ${exam.title}`, { bold: true, color: '#44556c', size: 11, align: 'center', after: 4 }));
+    documentParts.push(paragraphXml(`${sourceText}  |  리포트 생성일 ${core.formatDate(snapshot.generatedAt)}`, { color: '#718096', size: 8, align: 'center', after: 22 }));
+    documentParts.push(tableXml([
+      rowXml([
+        metricCell('총점', `${fmt(r.score)} / 100`, topRate == null ? '비교 데이터 준비 중' : `상위 ${fmt(topRate)}%`, '#EEF5FF', '#063B8F'),
+        metricCell('정답률', `${fmt(r.correct / exam.answerCount * 100)}%`, `정답 ${r.correct} · 오답 ${r.wrong} · 미기입 ${r.blank}`, '#F2FBF7', '#167A58'),
+        metricCell('전체 평균', `${fmt(c.average || 0)}점`, `${total}명 비교 기준`, '#F7F8FA', '#44556C')
+      ], { cantSplit: true })
+    ], [3260, 3260, 3260], { borderColor: '#B9CBEA', borderSize: 10 }));
+    documentParts.push(paragraphXml('점수 확인부터 오답 해설, 필요한 공식, 같은 풀이 방식의 동형 문제까지 한 파일에서 확인할 수 있습니다.', { color: '#5e6d80', size: 9, align: 'center', before: 18, after: 4 }));
+    documentParts.push(imageParagraphXml(mark, { maxWidth: 72, maxHeight: 72, after: 0 }));
+    documentParts.push(pageBreakXml());
+
+    documentParts.push(headingXml(1, 'SCORECARD', '성적표와 전체 성적 비교', '정답·오답·미기입을 채점 규칙에 따라 분리하고 동일 시험 집단과 비교합니다.'));
+    documentParts.push(tableXml([
+      rowXml([
+        cellXml([
+          paragraphXml('TOTAL SCORE', { bold: true, color: '#D7E7FF', size: 8, after: 4 }),
+          paragraphXml(`${fmt(r.score)} / 100`, { bold: true, color: '#FFFFFF', size: 31, after: 5 }),
+          paragraphXml(`정답 ${r.correct}개 × ${fmt(exam.correctScore)}점 · 오답 ${r.wrong}개 × ${fmt(exam.wrongScore)}점 · 미기입 ${r.blank}개 × 0점`, { color: '#E6F0FF', size: 8, after: 0 })
+        ], { width: 9800, shading: '#063B8F', margins: { top: 180, right: 200, bottom: 180, left: 200 } })
+      ], { cantSplit: true })
+    ], [9800], { borderColor: '#063B8F', borderSize: 12 }));
+    const rank = c.rank ? `${c.rank} / ${Math.max(total, 1)}` : '—';
+    const percentile = topRate == null ? '—' : `상위 ${fmt(topRate)}%`;
+    documentParts.push(tableXml([
+      rowXml([
+        metricCell('전체 평균', `${fmt(c.average || 0)}점`, `학생 대비 ${signed(r.score - Number(c.average || 0))}점`),
+        metricCell('석차', rank, '동점자는 같은 순위'),
+        metricCell('상위 비율', percentile, '누적 집단 기준')
+      ], { cantSplit: true }),
+      rowXml([
+        metricCell('정답', String(r.correct), `획득 ${fmt(r.correct * exam.correctScore)}점`, '#F3FBF7', '#167A58'),
+        metricCell('오답', String(r.wrong), `감점 ${fmt(Math.abs(r.wrong * exam.wrongScore))}점`, '#FFF5F6', '#B23A48'),
+        metricCell('미기입', String(r.blank), '감점 없음', '#F6F7F9', '#6F7D8E')
+      ], { cantSplit: true })
+    ], [3260, 3260, 3260], { borderColor: '#D4DCE6', borderSize: 8 }));
+    documentParts.push(paragraphXml(total < 2 ? '비교 집단이 학생 본인 1명뿐이므로 평균과 정답률은 참고용입니다.' : `${total}명의 같은 시험 기록을 기준으로 계산했습니다.`, { shading: '#F6F9FD', color: '#42516a', size: 8.5, before: 10, after: 12 }));
+
+    setStage('성적 그래프 생성');
+    const scoreChart = media.add(scoreComparisonChart(snapshot), 'score-comparison');
+    const distribution = media.add(histogramChart(snapshot), 'score-distribution');
+    const domains = media.add(domainChart(snapshot, exam), 'domain-comparison');
+    const trend = media.add(trendChart(snapshot), 'score-trend');
+    [
+      ['점수 기준 비교', scoreChart],
+      ['전체 점수 분포', distribution],
+      ['대단원별 정답률', domains],
+      ['이전 회차 점수 추세', trend]
+    ].forEach(([title, asset]) => {
+      documentParts.push(paragraphXml(title, { style: 'Heading2', after: 5 }));
+      documentParts.push(imageParagraphXml(asset, { maxWidth: 660, maxHeight: 390, after: 10 }));
+    });
+    documentParts.push(pageBreakXml());
+
+    documentParts.push(headingXml(2, 'LEARNING ANALYSIS', '강점·취약점과 학습 코멘트', '이번 회차의 단원별 결과와 동일 학생의 이전 회차를 함께 고려했습니다.'));
+    const a = snapshot.analysis || {};
+    documentParts.push(tableXml([
+      rowXml([
+        cellXml([
+          paragraphXml('강점', { bold: true, color: '#167A58', size: 13, after: 5 }),
+          paragraphXml(a.strengthText || '현재 결과에서 상대적으로 높은 단원을 확인하세요.', { size: 9, after: 6 }),
+          bulletParagraphs((a.strengths || []).map((item) => `${item.domain} ${fmt(item.accuracy)}%`), { color: '#167A58', size: 8 })
+        ], { width: 4900, shading: '#F2FBF7' }),
+        cellXml([
+          paragraphXml('취약점', { bold: true, color: '#B23A48', size: 13, after: 5 }),
+          paragraphXml(a.weaknessText || '오답·미기입 문항을 중심으로 기본 개념을 보완하세요.', { size: 9, after: 6 }),
+          bulletParagraphs((a.weaknesses || []).map((item) => `${item.domain} ${fmt(item.accuracy)}%`), { color: '#B23A48', size: 8 })
+        ], { width: 4900, shading: '#FFF5F6' })
+      ], { cantSplit: false })
+    ], [4900, 4900], { borderColor: '#CBD7E6', borderSize: 9 }));
+    documentParts.push(boxXml('이전 회차 변화', a.trendText || '현재 회차를 기준점으로 삼습니다.', { shading: '#F6F9FD' }));
+    documentParts.push(boxXml('우선 복습 문항', (a.weakestTopics || []).length ? a.weakestTopics.join(' · ') : '오답과 미기입이 없어 전 범위 고난도 변형으로 확장할 수 있습니다.', { shading: '#F6F9FD' }));
+    documentParts.push(paragraphXml('교사형 자동 코멘트', { style: 'Heading2', after: 6 }));
+    documentParts.push(bulletParagraphs(a.comments || [], { size: 9 }));
+    const history = (snapshot.history || []).slice().sort((x, y) => Number(x.round || 0) - Number(y.round || 0));
+    documentParts.push(paragraphXml('동일 학생 회차별 기록', { style: 'Heading2', after: 6 }));
+    if (history.length) {
+      const header = rowXml(['회차', '시험', '점수', '정답', '오답', '미기입'].map((value, index) => cellXml(paragraphXml(value, { bold: true, color: '#17335B', size: 8, align: 'center', after: 0 }), { width: [750, 3900, 1000, 900, 900, 900][index], shading: '#EAF1FB' })), { header: true, cantSplit: true });
+      const rows = history.map((item) => rowXml([
+        cellXml(paragraphXml(`${item.round}회`, { align: 'center', size: 8, after: 0 }), { width: 750 }),
+        cellXml(paragraphXml(item.examTitle || item.examId, { size: 8, after: 0 }), { width: 3900 }),
+        cellXml(paragraphXml(fmt(item.score), { bold: true, color: '#063B8F', align: 'center', size: 8.5, after: 0 }), { width: 1000 }),
+        cellXml(paragraphXml(String(item.correct), { align: 'center', size: 8, after: 0 }), { width: 900 }),
+        cellXml(paragraphXml(String(item.wrong), { align: 'center', size: 8, after: 0 }), { width: 900 }),
+        cellXml(paragraphXml(String(item.blank), { align: 'center', size: 8, after: 0 }), { width: 900 })
+      ], { cantSplit: true }));
+      documentParts.push(tableXml([header, ...rows], [750, 3900, 1000, 900, 900, 900], { borderColor: '#C8D4E3', borderSize: 7 }));
+    } else documentParts.push(paragraphXml('이전 회차 데이터가 없습니다.', { color: '#64748B', size: 9 }));
+    documentParts.push(pageBreakXml());
+
+    documentParts.push(headingXml(3, 'QUESTION ANALYSIS', '문항별 정오표·단원·정답률', '문항 단원과 학생 답, 공식 답, 배점, 전체 정답률을 한 표로 정리했습니다.'));
+    const results = r.questionResults || core.grade(exam, r.answers).questionResults;
+    const stats = questionStats(c);
+    const qWidths = [480, 1050, 2180, 760, 760, 820, 650, 1050];
+    const qHeader = rowXml(['문항', '대단원', '세부 단원', '학생 답', '정답', '결과', '배점', '정답률'].map((value, index) => cellXml(paragraphXml(value, { bold: true, color: '#17335B', size: 7.5, align: 'center', after: 0 }), { width: qWidths[index], shading: '#EAF1FB' })), { header: true, cantSplit: true });
+    const qRows = results.map((item, index) => {
+      const question = exam.questions[index];
+      const rate = Number(stats[index]?.accuracy ?? stats[index]?.rate ?? 0);
+      const statusColor = item.status === 'correct' ? '#167A58' : item.status === 'wrong' ? '#B23A48' : '#6F7D8E';
+      const statusShade = item.status === 'correct' ? '#F2FBF7' : item.status === 'wrong' ? '#FFF5F6' : '#F3F5F7';
+      return rowXml([
+        cellXml(paragraphXml(String(item.no), { bold: true, align: 'center', size: 7.5, after: 0 }), { width: qWidths[0] }),
+        cellXml(paragraphXml(question.domain, { size: 7.2, after: 0 }), { width: qWidths[1] }),
+        cellXml(paragraphXml(question.unit, { size: 7.2, after: 0 }), { width: qWidths[2] }),
+        cellXml(paragraphXml(answerLabel(item.answer), { align: 'center', size: 8, after: 0 }), { width: qWidths[3] }),
+        cellXml(paragraphXml(answerLabel(item.key), { bold: true, align: 'center', size: 8, after: 0 }), { width: qWidths[4] }),
+        cellXml(paragraphXml(statusLabel(item.status), { bold: true, color: statusColor, align: 'center', size: 7.5, after: 0 }), { width: qWidths[5], shading: statusShade }),
+        cellXml(paragraphXml(signed(item.points), { bold: true, color: item.points < 0 ? '#B23A48' : item.points > 0 ? '#167A58' : '#6F7D8E', align: 'center', size: 7.5, after: 0 }), { width: qWidths[6] }),
+        cellXml(paragraphXml(`${fmt(rate)}%`, { align: 'center', size: 7.5, after: 0 }), { width: qWidths[7] })
+      ], { cantSplit: true });
+    });
+    documentParts.push(tableXml([qHeader, ...qRows], qWidths, { borderColor: '#C9D4E2', borderSize: 7 }));
+    documentParts.push(paragraphXml('정답률은 Google Sheet 모드에서는 누적 응시자 전체, 브라우저 모드에서는 링크 생성 시점에 저장되어 있던 응시자 기록을 기준으로 합니다.', { shading: '#F6F9FD', color: '#526278', size: 8, before: 8 }));
+    documentParts.push(pageBreakXml());
+
+    const needs = results.filter((item) => item.status !== 'correct');
+    documentParts.push(headingXml(4, 'WRONG ANSWER CLINIC', '오답·미기입 해설과 동형 문제', `학습 대상 ${needs.length}문항의 원문, 해설, 공식과 같은 풀이 방식의 새 문제를 정리했습니다.`));
+    if (!needs.length) {
+      documentParts.push(boxXml('전 문항 정답입니다.', '이번 회차의 오답 학습 대상은 없습니다. 다음 회차에서는 고난도 변형 문제로 학습을 확장할 수 있습니다.', { shading: '#F2FBF7', borderColor: '#8BC9AE', titleColor: '#167A58' }));
+    } else {
+      for (let index = 0; index < needs.length; index += 1) {
+        const item = needs[index];
+        const question = exam.questions[item.no - 1];
+        if (index > 0) documentParts.push(pageBreakXml());
+        setStage(`오답 ${index + 1}/${needs.length} 이미지`);
+        let questionAsset;
+        try {
+          questionAsset = await imageToWordAsset(questionImage(exam, question), { maxWidth: 1700, maxHeight: 2300, format: 'jpeg', quality: 0.9 });
+        } catch (error) {
+          console.warn(error);
+          questionAsset = placeholderAsset(`${question.no}번 원문 문제 이미지를 불러오지 못했습니다.`);
+        }
+        const questionMedia = media.add(questionAsset, `question-${question.no}`);
+        const statusColor = item.status === 'wrong' ? '#B23A48' : '#6F7D8E';
+        const statusShade = item.status === 'wrong' ? '#FFF5F6' : '#F3F5F7';
+        documentParts.push(tableXml([
+          rowXml([
+            cellXml([
+              paragraphXml(`${question.no}번 · ${question.unit}`, { bold: true, color: '#063B8F', size: 15, after: 4 }),
+              paragraphXml(question.topic, { color: '#526278', size: 8.5, after: 0 })
+            ], { width: 7200, shading: '#EDF3FB' }),
+            cellXml([
+              paragraphXml(statusLabel(item.status), { bold: true, color: statusColor, size: 10, align: 'center', after: 4 }),
+              paragraphXml(`학생 답 ${answerLabel(item.answer)}  |  정답 ${answerLabel(item.key)}`, { bold: true, color: '#26364d', size: 8, align: 'center', after: 0 })
+            ], { width: 2600, shading: statusShade, vAlign: 'center' })
+          ], { cantSplit: true })
+        ], [7200, 2600], { borderColor: '#B9C6D6', borderSize: 10 }));
+        documentParts.push(imageParagraphXml(questionMedia, { maxWidth: 650, maxHeight: 720, after: 10 }));
+        documentParts.push(tableXml([
+          rowXml([
+            cellXml([
+              paragraphXml('해설', { bold: true, color: '#17335B', size: 11, after: 5 }),
+              paragraphXml(question.officialSummary || '공식 해설을 확인하세요.', { size: 9, after: 0 })
+            ], { width: 4900, shading: '#F6F9FD' }),
+            cellXml([
+              paragraphXml('필요한 공식', { bold: true, color: '#17335B', size: 11, after: 5 }),
+              bulletParagraphs(question.formulas || [], { size: 8.5 })
+            ], { width: 4900, shading: '#F8FAFC' })
+          ], { cantSplit: false })
+        ], [4900, 4900], { borderColor: '#CBD7E6', borderSize: 8 }));
+        documentParts.push(boxXml('다시 풀 때 확인할 점', question.checkPoint || '조건과 적용 법칙을 한 줄로 정리한 뒤 계산하세요.', { shading: '#F6F9FD' }));
+        if (question.sourceNote) documentParts.push(boxXml('원문 확인 필요', question.sourceNote, { shading: '#FFF8E7', borderColor: '#E8B454', titleColor: '#9A6500' }));
+        const practice = practiceFor(question.no);
+        if (practice && Array.isArray(practice.choices) && practice.choices.length === 5) {
+          const choiceText = practice.choices.map((choice, choiceIndex) => `${circled[choiceIndex + 1]} ${choice}`);
+          // 동형 문제는 새 페이지에서 시작하여 문제·선택지·정답·해설이
+          // 앞 페이지와 어색하게 갈라지지 않도록 한다.
+          documentParts.push(pageBreakXml());
+          documentParts.push(tableXml([
+            rowXml([cellXml([
+              paragraphXml('SAME METHOD · ONE MORE', { bold: true, color: '#0875FF', size: 8, after: 3 }),
+              paragraphXml('같은 풀이로 한 문제 더', { bold: true, color: '#063B8F', size: 14, after: 6 }),
+              paragraphXml(practice.title || `${question.no}번 동형 문제`, { bold: true, color: '#26364d', size: 10, after: 4 }),
+              paragraphXml(practice.prompt || '', { size: 9, after: 6 }),
+              bulletParagraphs(choiceText, { color: '#063B8F', size: 8.5 }),
+              paragraphXml(`정답  ${circled[Number(practice.correct)]} ${practice.choices[Number(practice.correct) - 1] || ''}`, { bold: true, color: '#063B8F', size: 10, shading: '#EAF3FF', before: 7, after: 6 }),
+              paragraphXml(`같은 풀이 방식\n${practice.method || ''}`, { bold: false, color: '#26364d', size: 9, after: 6 }),
+              paragraphXml(`풀이\n${practice.solution || ''}`, { color: '#26364d', size: 9, after: 0 })
+            ], { width: 9800, shading: '#F5F9FF', margins: { top: 150, right: 180, bottom: 150, left: 180 } })], { cantSplit: false })
+          ], [9800], { borderColor: '#5C91CF', borderSize: 12 }));
+        }
+      }
+    }
+
+    documentParts.push(pageBreakXml());
+    documentParts.push(imageParagraphXml(mark, { maxWidth: 80, maxHeight: 80, after: 7 }));
+    documentParts.push(paragraphXml("Young's Physics", { bold: true, color: '#063B8F', size: 16, align: 'center', after: 4 }));
+    documentParts.push(paragraphXml('Exploring the laws of nature, empowering the future.', { color: '#68778b', size: 9, align: 'center', after: 12 }));
+    documentParts.push(paragraphXml(`자료 기준  ${exam.sourceNotice || ''}`, { color: '#53647a', size: 8, after: 8 }));
+    documentParts.push(paragraphXml(`본 리포트는 입력 답안과 등록된 응시 기록을 이용한 자동 학습 보조 자료입니다. ${config.footerNote || ''}`, { color: '#718096', size: 7.5, after: 0 }));
+
+    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>${documentParts.join('')}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/><w:cols w:space="720"/><w:docGrid w:linePitch="312"/></w:sectPr></w:body></w:document>`;
+
+    const mediaItems = media.all();
+    const relationshipRows = [
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>',
+      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>',
+      ...mediaItems.map((item) => `<Relationship Id="${item.rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${xmlEscape(item.target)}"/>`)
+    ].join('');
+    const documentRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationshipRows}</Relationships>`;
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpg" ContentType="image/jpeg"/><Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
+    const packageRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
+    const now = new Date().toISOString();
+    const coreProps = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xmlEscape(`${r.name} · ${exam.title} 성적 리포트`)}</dc:title><dc:subject>Young's Physics 학생 성적 분석</dc:subject><dc:creator>Young's Physics</dc:creator><cp:lastModifiedBy>Young's Physics</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>`;
+    const appProps = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Young's Physics</Application><AppVersion>2.6.0</AppVersion><Company>Young's Physics</Company><LinksUpToDate>false</LinksUpToDate><SharedDoc>false</SharedDoc><HyperlinksChanged>false</HyperlinksChanged></Properties>`;
+    const entries = [
+      { name: '[Content_Types].xml', data: contentTypes },
+      { name: '_rels/.rels', data: packageRels },
+      { name: 'docProps/core.xml', data: coreProps },
+      { name: 'docProps/app.xml', data: appProps },
+      { name: 'word/document.xml', data: documentXml },
+      { name: 'word/_rels/document.xml.rels', data: documentRels },
+      { name: 'word/styles.xml', data: buildStylesXml() },
+      { name: 'word/settings.xml', data: buildSettingsXml() },
+      ...mediaItems.map((item) => ({ name: item.path, data: item.data }))
+    ];
+    return createStoredZip(entries);
   }
 
   async function downloadWord() {
-    const button=document.getElementById('wordButton'); button.disabled=true; const old=button.innerHTML; button.innerHTML='준비 중…';
+    const button = document.getElementById('wordButton');
+    button.disabled = true;
+    const old = button.innerHTML;
+    const updateButton = (label) => { button.innerHTML = `<span class="btn-symbol">W</span><span>${esc(label)}</span>`; };
+    updateButton('Word 준비 중');
     try {
-      const source=document.getElementById('reportDocument');
-      const clone=source.cloneNode(true);
-      clone.querySelectorAll('.practice-quiz').forEach((node)=>node.classList.add('is-revealed'));
-      clone.querySelectorAll('.practice-feedback,.practice-actions').forEach((node)=>node.remove());
-      const images=Array.from(clone.querySelectorAll('img'));
-      await Promise.all(images.map(async(img)=>{try{img.src=await imageToDataUrl(new URL(img.getAttribute('src'),document.baseURI||location.href).href);}catch(error){console.warn(error);}}));
-      const css=`body{font-family:'Malgun Gothic',Arial,sans-serif;color:#172033;line-height:1.55;font-size:10.5pt}h1{font-size:28pt;color:#063b8f}h2{font-size:19pt;color:#063b8f;border-bottom:2px solid #063b8f;padding-bottom:6pt}h3{font-size:13pt}table{border-collapse:collapse;width:100%;margin:8pt 0}th,td{border:1px solid #cfd7e1;padding:5pt;font-size:9pt}th{background:#eef3f7}.report-section{page-break-inside:auto;margin-bottom:22pt}.report-cover{page-break-after:always;border:8pt solid #063b8f;padding:28pt;background:#f6f9ff}.report-cover__date{font-size:8pt;color:#667;text-align:right}.report-cover__profile{display:block;min-height:72pt;margin-top:16pt}.report-cover__avatar{float:left;width:60pt;height:60pt;border:1pt solid #cddbf0;border-radius:30pt;padding:2pt}.report-cover__avatar img{width:56pt;height:56pt}.report-cover__identity{margin-left:76pt}.report-cover__identity h1{margin:3pt 0;color:#063b8f}.report-cover__tags span{display:inline-block;border:1pt solid #cad9ee;padding:3pt 5pt;margin:2pt;border-radius:8pt;font-size:8pt}.report-cover__metrics{clear:both;display:table;width:100%;margin-top:22pt}.cover-metric{display:table-cell;width:33%;border-top:1pt solid #b9cbe4;padding:8pt}.cover-metric>span,.cover-metric em{display:block;font-size:8pt;color:#667}.cover-metric strong{display:block;font-size:20pt;color:#063b8f}.cover-metric strong small{font-size:9pt}.report-cover__foot{margin-top:22pt;font-size:8pt;color:#667}.score-hero,.score-cards,.chart-grid,.analysis-grid,.review-columns{display:block}.score-main,.score-card,.chart-card,.analysis-card,.review-block{border:1px solid #ccd5df;padding:10pt;margin:7pt 0}.score-main__value{font-size:36pt;color:#063b8f}.progress{height:8pt;background:#e5e9ee}.progress__bar{height:8pt;background:#063b8f}.question-summary{margin:8pt 0}.q-chip{display:inline-block;color:white;background:#777;padding:4pt;margin:2pt}.q-chip.correct{background:#1d7a59}.q-chip.wrong{background:#b23a48}.review-card{page-break-before:always;border:1px solid #cfd7e1;margin:12pt 0}.review-card__head{background:#f1f4f7;padding:9pt}.review-card__body{padding:10pt}.question-image{max-width:100%;max-height:520pt}.formula-list{font-family:Consolas,monospace}.practice-quiz{border:1px solid #bdd4df;padding:10pt;margin-top:10pt;background:#f7fafc}.practice-quiz__head{display:block}.practice-quiz__status,.practice-quiz__eyebrow{font-size:8pt}.practice-quiz__title{font-weight:bold}.practice-options{border:0;padding:0;margin:7pt 0}.practice-option{display:block;border:1px solid #d4dde6;padding:5pt;margin:3pt 0}.practice-option input{display:none}.practice-option__mark{font-weight:bold;margin-right:5pt}.practice-hint{display:none}.practice-solution{display:block;border:1px solid #d4dde6;padding:8pt;margin-top:7pt}.practice-solution__answer{font-weight:bold;border-bottom:1px solid #d4dde6;padding-bottom:5pt;margin-bottom:5pt}.report-footer{font-size:8pt;color:#667;padding:10pt}.no-print,svg{display:none}`;
-      const html=`<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>${esc(currentSnapshot.record.name)} 성적 리포트</title><style>${css}</style></head><body>${clone.outerHTML}</body></html>`;
-      const blob=new Blob(['\ufeff',html],{type:'application/msword;charset=utf-8'}); const href=URL.createObjectURL(blob); const link=document.createElement('a'); link.href=href; link.download=`${core.safeFilename(currentSnapshot.record.examTitle)}_${core.safeFilename(currentSnapshot.record.name)}_성적리포트.doc`; document.body.appendChild(link); link.click(); link.remove(); setTimeout(()=>URL.revokeObjectURL(href),1000); notify('Word 파일을 저장했습니다.');
-    } catch(error){console.error(error);alert(`Word 파일을 만들지 못했습니다: ${error.message}`);} finally{button.disabled=false;button.innerHTML=old;}
+      if (!currentSnapshot) throw new Error('성적 리포트가 아직 준비되지 않았습니다.');
+      const exam = core.getExam(catalog, currentSnapshot.record.examId);
+      if (!exam) throw new Error('시험 정보를 찾지 못했습니다.');
+      const bytes = await buildWordDocx(currentSnapshot, exam, (label) => updateButton(label));
+      updateButton('다운로드 중');
+      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = `${core.safeFilename(currentSnapshot.record.examTitle)}_${core.safeFilename(currentSnapshot.record.name)}_성적리포트.docx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 3000);
+      notify('그래프와 오답 문제 이미지를 포함한 Word 문서를 저장했습니다.');
+    } catch (error) {
+      console.error(error);
+      alert(`Word 파일을 만들지 못했습니다: ${error.message}`);
+    } finally {
+      button.disabled = false;
+      button.innerHTML = old;
+    }
   }
 
   async function copyText(text) {
