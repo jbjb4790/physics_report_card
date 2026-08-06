@@ -120,6 +120,10 @@ img { max-width: 100%; }
 .score-preview__score { font-size: 31px; line-height: 1; font-weight: 950; letter-spacing: -.05em; color: var(--brand); }
 .score-preview__score small { font-size: 13px; color: var(--muted); letter-spacing: 0; }
 .score-preview__counts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.score-preview__cohort { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin-top: 14px; padding-top: 13px; border-top: 1px solid #d4e2f2; }
+.score-preview__cohort > div { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid #d7e4f4; border-radius: 12px; background: rgba(255,255,255,.82); }
+.score-preview__cohort span { color: var(--muted); font-size: 10px; font-weight: 800; }
+.score-preview__cohort strong { color: var(--brand); font-size: 14px; font-weight: 950; }
 .count-pill { padding: 5px 8px; border-radius: 999px; font-size: 10px; font-weight: 800; background: #fff; border: 1px solid var(--line); }
 .count-pill.good { color: var(--good); }
 .count-pill.bad { color: var(--bad); }
@@ -1414,3 +1418,5 @@ tbody tr:hover { background: #f6faff; }
 
 /* v2.9.0 - optional school field */
 .field-optional{display:inline-flex;align-items:center;margin-left:5px;padding:2px 7px;border-radius:999px;background:#eaf2ff;color:#1a5fbd;font-size:10px;font-weight:800;vertical-align:middle}
+
+@media (max-width: 640px) { .score-preview__cohort { grid-template-columns: 1fr; } }

@@ -6,6 +6,10 @@ window.APP_CONFIG = {
   backendUrl: 'https://script.google.com/macros/s/AKfycbx3PkumTW3dFg1nvXpgcp3o0Y3NX7YfrcMyDUtYB_uMVAKsxe6SDPWi0clMBR-SPwkwzA/exec',
   backendAutoConnect: true,
   backendRequiredForSaves: true,
+  // 새 학생 저장 전에 같은 시험의 기존 로컬·기본 기록을 Google Sheets에 자동 반영합니다.
+  autoSyncSameExamCohortOnSave: true,
+  // 서버가 반환한 비교 인원과 이 기기의 같은 시험 기록 수를 대조하고 부족하면 한 번 재동기화합니다.
+  verifyServerCohortOnSave: true,
   syncServerRecordsOnLoad: true,
   serverSyncPageSize: 250,
   serverSyncIntervalMs: 120000,

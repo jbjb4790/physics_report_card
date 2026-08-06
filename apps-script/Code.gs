@@ -7,6 +7,7 @@
  * - SPREADSHEET_ID (optional): required only for a standalone script
  */
 
+var SERVER_VERSION = '3.0.0';
 var SHEET_NAME = 'Reports';
 var HEADERS = ['Token','CreatedAt','UpdatedAt','ExamId','Round','StudentKey','School','Name','AnswersJSON','RecordJSON'];
 
@@ -157,7 +158,7 @@ function doGet(e) {
   try {
     var action = String((e && e.parameter && e.parameter.action) || 'ping');
     if (action === 'ping') {
-      response = { ok: true, message: 'TPL 성적 서버 연결에 성공했습니다.', serverTime: new Date().toISOString() };
+      response = { ok: true, message: 'TPL 성적 서버 연결에 성공했습니다.', serverVersion: SERVER_VERSION, cohortScope: 'same-exam-google-sheet', serverTime: new Date().toISOString() };
     } else if (action === 'save') {
       assertWriteKey_(e.parameter.writeKey);
       response = saveReport_(e.parameter.payload);
@@ -297,7 +298,7 @@ function saveReport_(payloadText) {
     lock.releaseLock();
   }
 
-  return { ok: true, token: token, id: token, report: buildSnapshot_(record) };
+  return { ok: true, token: token, id: token, serverVersion: SERVER_VERSION, report: buildSnapshot_(record) };
 }
 
 
@@ -383,7 +384,7 @@ function getReport_(id) {
   if (!/^[A-Fa-f0-9]{24,64}$/.test(token)) throw apiError_('INVALID_ID', '학생 결과 링크의 ID가 올바르지 않습니다.');
   var item = findByToken_(sheet_(), token);
   if (!item) throw apiError_('NOT_FOUND', '삭제되었거나 존재하지 않는 학생 결과입니다.');
-  return { ok: true, token: token, dynamic: true, report: buildSnapshot_(item.record) };
+  return { ok: true, token: token, dynamic: true, serverVersion: SERVER_VERSION, report: buildSnapshot_(item.record) };
 }
 
 function listReports_(limitValue, offsetValue) {
@@ -396,6 +397,7 @@ function listReports_(limitValue, offsetValue) {
   var nextOffset = offset + items.length;
   return {
     ok: true,
+    serverVersion: SERVER_VERSION,
     total: all.length,
     offset: offset,
     limit: limit,
@@ -530,7 +532,9 @@ function buildSnapshot_(currentRecord) {
   var history = history_(records, currentRecord);
   var analysis = analysis_(exam, enriched, cohort, history);
   return {
-    version: 2,
+    version: 3,
+    serverVersion: SERVER_VERSION,
+    cohortScope: 'same-exam-google-sheet',
     generatedAt: new Date().toISOString(),
     dynamicHistory: true,
     record: {
@@ -607,6 +611,7 @@ function cohort_(records, examId, currentRecord) {
   var sorted = scores.slice().sort(function (a, b) { return b - a; });
   var topCount = total ? Math.max(1, Math.ceil(total * 0.25)) : 0;
   return {
+    source: 'google-sheets-same-exam',
     total: total,
     average: round_(average_(scores), 2),
     median: round_(median_(scores), 2),

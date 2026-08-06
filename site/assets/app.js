@@ -35,6 +35,7 @@
     storageSettingsOpen: false,
     search: '',
     busy: false,
+    busyMessage: '',
     editingId: ''
   };
 
@@ -711,6 +712,104 @@
     return { saved, failed };
   }
 
+  function updateGenerateProgress(message) {
+    state.busyMessage = String(message || '저장·링크 복사 중…');
+    const button = document.getElementById('generateReport');
+    const label = button?.querySelector('span:last-child');
+    if (state.busy && label) label.textContent = state.busyMessage;
+  }
+
+  function recordUpdatedTime(record) {
+    const value = Date.parse(String(record?.updatedAt || record?.createdAt || ''));
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function latestSameExamRecords(currentRecord) {
+    const currentExam = core.getExam(catalog, currentRecord?.examId);
+    if (!currentExam) return [];
+    const latest = new Map();
+    [...loadRecords(), currentRecord].forEach((raw) => {
+      if (!raw || raw.examId !== currentExam.id || !core.normalizeText(raw.name)) return;
+      const normalized = {
+        ...raw,
+        examId: currentExam.id,
+        round: Number(raw.round || currentExam.round || 0),
+        school: normalizeSchool(raw.school),
+        name: core.normalizeText(raw.name),
+        answers: core.normalizeAnswers(raw.answers, currentExam.answerCount)
+      };
+      const key = core.studentKey(normalized);
+      const previous = latest.get(key);
+      if (!previous || recordUpdatedTime(normalized) >= recordUpdatedTime(previous)) latest.set(key, normalized);
+    });
+
+    const normalizedCurrent = {
+      ...currentRecord,
+      examId: currentExam.id,
+      round: Number(currentRecord.round || currentExam.round || 0),
+      school: normalizeSchool(currentRecord.school),
+      name: core.normalizeText(currentRecord.name),
+      answers: core.normalizeAnswers(currentRecord.answers, currentExam.answerCount)
+    };
+    latest.set(core.studentKey(normalizedCurrent), normalizedCurrent);
+    return [...latest.values()];
+  }
+
+  async function ensureSameExamCohortOnServer(currentRecord, options = {}) {
+    if (config.autoSyncSameExamCohortOnSave === false) {
+      return { expectedTotal: 1, candidates: 0, saved: 0, failed: 0 };
+    }
+    const forceAll = Boolean(options.forceAll);
+    const cohort = latestSameExamRecords(currentRecord);
+    const currentKey = core.studentKey(currentRecord);
+    const candidates = cohort.filter((record) => {
+      if (core.studentKey(record) === currentKey) return false;
+      return forceAll || !record.serverId;
+    });
+    if (!candidates.length) return { expectedTotal: cohort.length, candidates: 0, saved: 0, failed: 0 };
+
+    updateGenerateProgress(`같은 시험 기존 ${candidates.length}명 서버 반영 중…`);
+    const result = await saveManyRecordsToServer(candidates);
+    if (result.failed) {
+      const error = new Error(`같은 시험 기존 학생 ${result.failed}명의 Google Sheets 저장에 실패했습니다. 서버 기록 새로고침 후 다시 시도해 주세요.`);
+      error.code = 'COHORT_SYNC_FAILED';
+      throw error;
+    }
+    return { expectedTotal: cohort.length, candidates: candidates.length, ...result };
+  }
+
+  async function saveRecordWithFullCohort(record) {
+    const localCohort = latestSameExamRecords(record);
+    const expectedTotal = Math.max(1, localCohort.length);
+
+    await ensureSameExamCohortOnServer(record);
+    updateGenerateProgress('학생 결과 저장·전체 통계 계산 중…');
+    let saved = await saveRecordToServer(record);
+    let serverTotal = Number(saved.snapshot?.cohort?.total || 0);
+
+    // 이전 배포·다른 Sheet의 serverId가 남아 있거나 기존 자료가 아직 서버에
+    // 없으면, 같은 시험의 로컬 기록을 한 번 전부 다시 올린 뒤 현재 학생을
+    // 재저장한다. 이 과정을 거쳐 새 학생도 기존 응시자 전체와 비교된다.
+    if (config.verifyServerCohortOnSave !== false && serverTotal < expectedTotal) {
+      await ensureSameExamCohortOnServer(saved.record || record, { forceAll: true });
+      updateGenerateProgress('전체 응시자 평균·석차 다시 계산 중…');
+      saved = await saveRecordToServer(saved.record || record);
+      serverTotal = Number(saved.snapshot?.cohort?.total || 0);
+    }
+
+    if (config.verifyServerCohortOnSave !== false && serverTotal < expectedTotal) {
+      const error = new Error(`같은 시험의 기존 기록은 ${expectedTotal}명이지만 Google Sheets 통계에는 ${serverTotal}명만 반영되었습니다. 학생 기록 영역의 ‘서버 기록 새로고침’을 누른 뒤 다시 제출해 주세요.`);
+      error.code = 'COHORT_COUNT_MISMATCH';
+      throw error;
+    }
+
+    state.serverRecordCount = Math.max(Number(state.serverRecordCount || 0), serverTotal);
+    state.serverSyncStatus = 'synced';
+    state.serverSyncMessage = `${saved.snapshot?.record?.examTitle || '동일 시험'} ${serverTotal}명 기준으로 평균과 석차를 계산했습니다.`;
+    saveSettings();
+    return { ...saved, expectedTotal, serverTotal };
+  }
+
   async function uploadLocalRecordsToServer() {
     const pending = localOnlyRecords();
     if (!pending.length) { toast('이 기기에만 있는 학생 기록이 없습니다.', 'good'); return; }
@@ -819,7 +918,7 @@
           <div style="padding-top:13px"><div class="field"><label for="storageMode">저장 방식</label><select class="select" id="storageMode"><option value="apps-script"${state.storageMode === 'apps-script' ? ' selected' : ''}>Google Sheets + Apps Script · 모든 교사 기기 동기화</option><option value="local"${state.storageMode === 'local' ? ' selected' : ''}${config.backendRequiredForSaves ? ' disabled' : ''}>브라우저 임시 저장 · 이 기기에서만 확인</option></select></div>
           <div class="field${state.storageMode === 'apps-script' ? '' : ' hidden'}" id="backendField"><label for="backendUrl">Apps Script 웹 앱 URL</label><input class="input" id="backendUrl" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec" value="${escape(state.backendUrl)}">${backendStatusHtml()}<div class="backend-write-key"><label for="backendWriteKey">Google Sheets 저장 키</label><input class="input" id="backendWriteKey" type="password" autocomplete="current-password" spellcheck="false" placeholder="Apps Script의 WRITE_KEY" value="${escape(state.writeKey)}"><small>한 번 입력하면 <strong>이 교사 기기의 브라우저에 계속 저장</strong>되어 학생 제출 때마다 팝업이 나타나지 않습니다. 공용 기기에서는 작업 후 ‘저장 키 지우기’를 누르세요.</small></div><small class="backend-setting-note">학생 결과는 Google Sheets를 원본으로 저장합니다. 다른 컴퓨터에서는 같은 저장 키를 <strong>처음 한 번만</strong> 입력하면 기존 학생 목록이 자동으로 동기화됩니다.</small><div class="button-row backend-field-actions"><button class="btn btn--primary btn--small" type="button" id="pingBackend">연결 확인·학생 기록 동기화</button><button class="btn btn--soft btn--small" type="button" id="copyBackendSetup">다른 기기 연결 주소 복사</button><button class="btn btn--soft btn--small" type="button" id="forgetWriteKey">저장 키 지우기</button><button class="btn btn--ghost btn--small" type="button" id="clearBackendConnection">연결 주소 지우기</button></div></div></div>
         </details>
-        <div class="button-row report-create-row"><button class="btn btn--primary btn--copy-report" type="button" id="generateReport"${state.busy ? ' disabled' : ''}><span class="btn-symbol">↗</span><span>${state.busy ? '저장·링크 복사 중…' : state.editingId ? '수정하고 분석 링크 복사' : '성적 분석 링크 생성·복사'}</span></button><button class="btn btn--soft" type="button" id="clearForm">초기화</button></div>
+        <div class="button-row report-create-row"><button class="btn btn--primary btn--copy-report" type="button" id="generateReport"${state.busy ? ' disabled' : ''}><span class="btn-symbol">↗</span><span>${state.busy ? (state.busyMessage || '저장·링크 복사 중…') : state.editingId ? '수정하고 분석 링크 복사' : '성적 분석 링크 생성·복사'}</span></button><button class="btn btn--soft" type="button" id="clearForm">초기화</button></div>
       </div>
     </section>`;
   }
@@ -1107,12 +1206,10 @@
         focusWriteKeyField('Google Sheets 저장 키를 한 번 입력한 뒤 다시 눌러 주세요.');
         throw new Error('Google Sheets 저장 키가 저장되지 않았습니다.');
       }
-      if (!serverId) {
-        const saved = await saveRecordToServer(current);
-        current = saved.record;
-        serverId = saved.serverId;
-        snapshot = saved.snapshot;
-      }
+      const saved = await saveRecordWithFullCohort(current);
+      current = saved.record;
+      serverId = saved.serverId;
+      snapshot = saved.snapshot;
       serverWorked = Boolean(serverId);
     }
 
@@ -1126,7 +1223,7 @@
 
   async function generate() {
     if (state.busy || !validateStudent()) return;
-    state.busy = true; render();
+    state.busy = true; state.busyMessage = '저장·링크 복사 중…'; render();
     try {
       const existing = state.editingId ? loadRecords().find((item) => item.id === state.editingId) : null;
       const draft = {
@@ -1148,7 +1245,7 @@
       if (state.storageMode === 'apps-script') {
         saveSettings();
         try {
-          const saved = await saveRecordToServer(draft);
+          const saved = await saveRecordWithFullCohort(draft);
           record = saved.record;
           serverId = saved.serverId;
           snapshot = saved.snapshot;
@@ -1173,19 +1270,23 @@
       }
       openLinkModal(url, snapshot, serverWorked, copied);
       state.editingId = record.id;
-      toast(copied ? `${record.name} 학생의 성적 분석 링크를 생성하고 복사했습니다.` : `${record.name} 학생의 성적 분석 링크를 생성했습니다. 팝업의 링크 복사 버튼을 눌러 주세요.`, copied ? 'good' : '');
+      const cohortTotal = Number(snapshot?.cohort?.total || 1);
+      toast(copied ? `${record.name} 학생 링크를 복사했습니다. 같은 시험 ${cohortTotal}명 기준으로 평균과 석차를 계산했습니다.` : `${record.name} 학생의 성적 분석 링크를 생성했습니다. 같은 시험 ${cohortTotal}명 기준입니다.`, copied ? 'good' : '');
       if (serverWorked) syncServerRecords({ silent: true, force: true });
     } catch (error) {
       console.error(error); toast(`리포트 생성 중 오류: ${error.message}`, 'error');
     } finally {
-      state.busy = false; render();
+      state.busy = false; state.busyMessage = ''; render();
     }
   }
 
   function openLinkModal(url, snapshot, serverWorked, copied = false) {
+    const cohort = snapshot.cohort || {};
+    const cohortTotal = Math.max(1, Number(cohort.total || 1));
+    const cohortRank = cohort.rank ? `${cohort.rank} / ${cohortTotal}` : '—';
     const modal = document.createElement('div');
     modal.className = 'modal-backdrop';
-    modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="linkModalTitle"><div class="modal__head"><div><h3 id="linkModalTitle">${copied ? '성적 분석 링크 복사 완료' : `${escape(snapshot.record.name)} 학생 전용 링크`}</h3><p style="margin:5px 0 0;color:var(--muted);font-size:12px">${escape(snapshot.record.school)} · ${escape(snapshot.record.examTitle)}</p></div><button class="close-button" aria-label="닫기">×</button></div><div class="modal__body"><div class="link-copy-alert ${copied ? 'is-copied' : 'is-manual'}"><strong>${copied ? '바로 붙여넣을 수 있게 클립보드에 복사했습니다.' : '브라우저가 자동 복사를 막았습니다.'}</strong><span>${copied ? '카카오톡, 문자, 이메일 등에 그대로 붙여넣어 공유하면 됩니다.' : '아래의 큰 링크 복사 버튼을 한 번 눌러 주세요.'}</span></div><div class="score-preview"><div class="score-preview__row"><div><span class="quick-stat__label">산출 점수</span><div class="score-preview__score">${core.formatScore(snapshot.record.score)}<small>/100</small></div></div><div class="score-preview__counts"><span class="count-pill good">정답 ${snapshot.record.correct}</span><span class="count-pill bad">오답 ${snapshot.record.wrong}</span><span class="count-pill blank">미기입 ${snapshot.record.blank}</span></div></div></div><div class="link-box">${escape(url)}</div><div class="button-row link-modal-actions"><button class="btn btn--primary" id="modalCopy"><span class="btn-symbol">↗</span>링크 다시 복사</button><a class="btn btn--secondary" href="${escape(url)}" target="_blank" rel="noopener">성적표 열기</a></div><p style="font-size:11px;color:var(--muted)">${serverWorked ? 'Google Sheet에서 무작위 토큰으로 결과와 최신 누적 통계를 불러옵니다. 링크를 아는 사람은 별도 로그인 없이 학생 리포트를 볼 수 있습니다.' : '링크 안에 현재 성적과 통계 백업이 포함되어 있어 다른 기기에서도 열 수 있습니다.'}</p></div></div>`;
+    modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="linkModalTitle"><div class="modal__head"><div><h3 id="linkModalTitle">${copied ? '성적 분석 링크 복사 완료' : `${escape(snapshot.record.name)} 학생 전용 링크`}</h3><p style="margin:5px 0 0;color:var(--muted);font-size:12px">${escape(snapshot.record.school)} · ${escape(snapshot.record.examTitle)}</p></div><button class="close-button" aria-label="닫기">×</button></div><div class="modal__body"><div class="link-copy-alert ${copied ? 'is-copied' : 'is-manual'}"><strong>${copied ? '바로 붙여넣을 수 있게 클립보드에 복사했습니다.' : '브라우저가 자동 복사를 막았습니다.'}</strong><span>${copied ? '카카오톡, 문자, 이메일 등에 그대로 붙여넣어 공유하면 됩니다.' : '아래의 큰 링크 복사 버튼을 한 번 눌러 주세요.'}</span></div><div class="score-preview"><div class="score-preview__row"><div><span class="quick-stat__label">산출 점수</span><div class="score-preview__score">${core.formatScore(snapshot.record.score)}<small>/100</small></div></div><div class="score-preview__counts"><span class="count-pill good">정답 ${snapshot.record.correct}</span><span class="count-pill bad">오답 ${snapshot.record.wrong}</span><span class="count-pill blank">미기입 ${snapshot.record.blank}</span></div></div><div class="score-preview__cohort"><div><span>동일 시험 기준</span><strong>${cohortTotal}명</strong></div><div><span>전체 평균</span><strong>${core.formatScore(cohort.average || 0)}점</strong></div><div><span>석차</span><strong>${cohortRank}</strong></div></div></div><div class="link-box">${escape(url)}</div><div class="button-row link-modal-actions"><button class="btn btn--primary" id="modalCopy"><span class="btn-symbol">↗</span>링크 다시 복사</button><a class="btn btn--secondary" href="${escape(url)}" target="_blank" rel="noopener">성적표 열기</a></div><p style="font-size:11px;color:var(--muted)">${serverWorked ? 'Google Sheet에서 무작위 토큰으로 결과와 최신 누적 통계를 불러옵니다. 링크를 아는 사람은 별도 로그인 없이 학생 리포트를 볼 수 있습니다.' : '링크 안에 현재 성적과 통계 백업이 포함되어 있어 다른 기기에서도 열 수 있습니다.'}</p></div></div>`;
     document.body.appendChild(modal);
     const close = () => modal.remove();
     modal.addEventListener('click', (event) => { if (event.target === modal || event.target.closest('.close-button')) close(); });
