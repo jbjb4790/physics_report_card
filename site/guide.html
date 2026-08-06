@@ -6,7 +6,7 @@
   <title>TPL 성적 분석 사용 안내</title>
   <link rel="icon" href="assets/youngs-physics-mark-64.png" type="image/png">
   <link rel="apple-touch-icon" href="assets/youngs-physics-mark-192.png">
-  <link rel="stylesheet" href="assets/styles.css?v=2.2.0">
+  <link rel="stylesheet" href="assets/styles.css?v=2.5.0">
   <style>
     .guide{max-width:900px;margin:32px auto;padding:0 18px 70px}.guide h1{letter-spacing:-.04em}.guide h2{margin-top:36px}.guide pre,.guide code{font-family:ui-monospace,monospace}.guide code{background:#edf2f7;padding:2px 5px;border-radius:5px}.step{padding:20px;border:1px solid var(--line);border-radius:16px;background:#fff;margin:12px 0}.guide li+li{margin-top:8px}.mode-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.mode-grid .step{margin:0}@media(max-width:700px){.mode-grid{grid-template-columns:1fr}}
   </style>
@@ -18,7 +18,7 @@
   <h1>학생별 성적표 링크 만들기</h1>
   <p>학교, 학생 이름, 1~20번 답안을 입력한 뒤 <strong>학생별 성적표 링크 생성</strong>을 누릅니다.</p>
 
-  <div class="step"><strong>채점 규칙</strong><br>정답 +5점, 오답 -1.25점, 미기입 0점입니다. 빈칸은 답안 버튼의 ‘빈칸’ 또는 붙여넣기에서 <code>0</code>, <code>X</code>, <code>-</code>로 입력할 수 있습니다.</div>
+  <div class="step"><strong>채점 규칙</strong><br>정답 +5점, 오답 -1.25점, 미기입 0점입니다. 빈칸은 문항을 비우거나 붙여넣기에서 <code>0</code>, <code>X</code>, <code>-</code>로 입력할 수 있습니다. 엑셀·Google Sheets의 한 행을 그대로 복사하면 탭 사이의 빈 셀도 해당 문항의 미기입으로 보존됩니다.</div>
   <div class="step"><strong>학생에게 전달</strong><br>생성된 링크는 학생마다 다릅니다. 링크를 복사해 학생에게 개인적으로 전달하세요. 결과 화면 오른쪽 위에서 Word 파일 저장과 PDF 저장·인쇄를 할 수 있습니다.</div>
   <div class="step"><strong>오답 동형 문제</strong><br>틀리거나 비운 문항에는 같은 풀이 방식을 사용하는 새 5지선다 문제가 1개씩 나옵니다. 처음에는 정답과 풀이가 가려져 있습니다. 학생이 선택지를 고르는 순간 정오가 채점되고 정답과 해설이 공개되며, 다시 풀기로 초기화할 수 있습니다. 풀이 기록은 학생이 사용하는 기기의 브라우저에 저장됩니다.</div>
   <div class="step"><strong>답안 한 번에 입력</strong><br>20개 번호를 공백·쉼표·슬래시로 구분해 붙여넣거나 <strong>CSV 입력 양식</strong>을 내려받아 여러 학생 기록을 가져올 수 있습니다.</div>
@@ -36,14 +36,22 @@
     <li><strong>프로젝트 설정 → 스크립트 속성</strong>에 <code>WRITE_KEY</code>를 추가하고 교사만 아는 긴 비밀번호를 저장합니다.</li>
     <li><code>initializeSheet</code> 함수를 한 번 실행해 권한을 승인합니다.</li>
     <li><strong>배포 → 새 배포 → 웹 앱</strong>에서 실행 사용자를 본인, 액세스 사용자를 학생이 열 수 있는 범위로 지정합니다. 로그인 없는 링크가 필요하면 익명 사용자 포함 권한이 필요합니다.</li>
-    <li>생성된 <code>/exec</code> URL을 입력 화면의 누적 저장 설정에 넣고 <strong>서버 연결 확인</strong>을 누릅니다.</li>
-    <li>첫 학생 저장 때 <code>WRITE_KEY</code>를 입력합니다. 키는 현재 탭에만 임시 보관됩니다.</li>
+    <li>생성된 <code>/exec</code> URL을 입력 화면의 누적 저장 설정에 넣고 <strong>주소 저장·연결 확인</strong>을 누릅니다.</li>
+    <li>연결에 성공한 URL과 저장 방식은 이 브라우저의 <code>localStorage</code>에 저장됩니다. 같은 GitHub Pages 주소를 다시 열거나 사이트를 재배포해도 자동으로 불러와 서버 연결을 확인합니다.</li>
+    <li>누적 저장 방식 설정의 <strong>Google Sheets 저장 키</strong> 칸에 <code>WRITE_KEY</code>를 한 번 입력합니다. 이 교사 기기에 저장되어 이후 제출 때 다시 묻지 않습니다.</li>
   </ol>
 
-  <h2>이전 회차 분석</h2>
-  <p>새 회차 시험을 <code>assets/exam-data.js</code>와 Apps Script의 <code>EXAMS</code>에 같은 시험 ID로 추가한 뒤, 같은 학교·이름으로 입력하면 이전 회차 점수와 단원별 변화를 자동으로 연결합니다. 현재 패키지에는 1회~10회 시험·해설이 등록되어 있으며, 1회~5회 학생 결과 225개가 기본 데이터로 포함되어 있습니다. 같은 학교·이름으로 입력하면 회차별 변화가 자동으로 연결됩니다.</p>
+  <h2>Apps Script 연결을 계속 유지하는 방법</h2>
+  <div class="mode-grid">
+    <div class="step"><strong>같은 기기·브라우저</strong><br>사이트에서 <code>/exec</code> 주소를 한 번 입력하면 즉시 저장됩니다. 다음 접속부터 저장 방식을 Google Sheets로 복원하고 자동으로 연결 상태를 확인합니다. 브라우저 데이터 삭제·시크릿 모드에서는 다시 입력해야 합니다.</div>
+    <div class="step"><strong>다른 기기</strong><br><strong>다른 기기 설정 링크 복사</strong>를 눌러 만든 링크를 새 기기에서 한 번 열면 그 브라우저에도 같은 주소가 저장됩니다. Apps Script URL은 연결 주소이며 <code>WRITE_KEY</code>는 포함되지 않습니다.</div>
+  </div>
+  <p>모든 교사 기기에서 별도 입력 없이 자동 연결하려면 <code>site/assets/config.js</code>의 <code>backendUrl</code> 값에 Apps Script의 <code>/exec</code> 주소를 넣어 GitHub에 올립니다. 이 경우에도 <code>WRITE_KEY</code>는 코드나 GitHub 저장소에 넣지 않습니다.</p>
 
-  <div class="notice"><strong>개인정보와 링크 보안</strong><br>성적표 링크는 계정 로그인 문서가 아니라 링크 소지자가 볼 수 있는 방식입니다. 공개 게시판에 링크를 올리지 마세요. 이 배포본은 요청에 따라 1~5회 기존 학생 이름과 답안을 <code>assets/seed-records.js</code>에 포함하므로 공개 GitHub Pages에서는 해당 데이터도 내려받을 수 있습니다. 실제 운영 전 공개 범위를 확인하고, 공개 사이트라면 기본 데이터를 제거한 뒤 Google Sheets 모드로 이전하세요. Google Sheets 저장 키는 코드나 저장소에 넣지 마세요. 동명이인이 있을 수 있다면 이름에 반·번호 또는 내부 식별 문자를 함께 입력하세요.</div>
+  <h2>이전 회차 분석</h2>
+  <p>같은 학교·이름으로 저장된 기록은 <strong>입력한 순서가 아니라 회차 번호 순서</strong>로 연결됩니다. 예를 들어 5회 결과를 먼저 입력하고 4회 결과를 나중에 입력해도, 기존 5회 서버 링크를 다시 열거나 상단의 <strong>최신 분석</strong>을 누르면 4회가 이전 회차 분석에 포함됩니다. 반대로 4회 리포트에는 미래 회차인 5회가 표시되지 않습니다. 예전 <code>#report=...</code> 링크에 서버 토큰이 남아 있으면 열 때 자동으로 최신 서버 링크로 전환됩니다. 현재 패키지에는 1회~10회 시험·해설이 등록되어 있습니다.</p>
+
+  <div class="notice"><strong>개인정보와 링크 보안</strong><br>성적표 링크는 계정 로그인 문서가 아니라 링크 소지자가 볼 수 있는 방식입니다. 공개 게시판에 링크를 올리지 마세요. 이 공개 배포용 버전은 <code>assets/seed-records.js</code>를 빈 데이터로 구성하여 실제 학생 이름과 답안을 포함하지 않습니다. 실제 성적은 교사용 화면에서 입력하거나 Google Sheets 모드로 저장하세요. Google Sheets 저장 키는 코드나 저장소에 넣지 마세요. 키는 교사 기기 브라우저에 저장되므로 공용 컴퓨터에서는 작업 후 반드시 지우세요. 동명이인이 있을 수 있다면 이름에 반·번호 또는 내부 식별 문자를 함께 입력하세요.</div>
 
   <h2>시험 자료 해설 메모</h2>
   <p><strong>1회 7번</strong>은 공식 정답표 ⑤를 적용하며, 유도 전류 방향 관련 해설 문구의 불일치를 성적표에 표시했습니다. <strong>2회 3번</strong>은 공식 해설에서 추와 수레의 질량 기호가 식과 설명 사이에 뒤바뀐 표기가 있어 표준식으로 정리했으며 공식 정답 ②는 그대로 유지합니다. <strong>3회</strong>는 공식 정답표 ④,⑤,③,④,①,④,③,③,①,②,④,③,④,⑤,②,②,④,②,②,④를 적용했습니다. <strong>9회 7번</strong>과 <strong>10회 18번</strong>은 공식 정답표와 문항·해설의 해석이 맞지 않아 공식 키로 채점하면서 리포트에 원문 확인 메모를 표시합니다.</p>

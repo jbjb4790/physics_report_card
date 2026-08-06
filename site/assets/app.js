@@ -7,6 +7,7 @@
   const SETTINGS_KEY = `${config.storageKey || 'tpl-score-report-records-v1'}-settings`;
   const SEED_KEY = `${config.storageKey || 'tpl-score-report-records-v1'}-seed-version`;
   const BACKEND_SETUP_PARAM = config.backendSetupParam || 'appsScript';
+  const WRITE_KEY_STORAGE_KEY = `${config.storageKey || 'tpl-score-report-records-v1'}-backend-write-key`;
   const seedMetadata = window.SEED_RECORDS_METADATA || {};
   const seedRecords = Array.isArray(window.SEED_RECORDS) ? window.SEED_RECORDS : [];
   const app = document.getElementById('app');
@@ -22,6 +23,8 @@
     backendStatus: 'idle',
     backendStatusMessage: '',
     backendLastVerifiedAt: '',
+    writeKey: '',
+    storageSettingsOpen: false,
     search: '',
     busy: false,
     editingId: ''
@@ -58,6 +61,49 @@
     }
   }
 
+  function readWriteKey() {
+    try {
+      const persistent = localStorage.getItem(WRITE_KEY_STORAGE_KEY) || '';
+      const legacySession = sessionStorage.getItem('tpl-backend-write-key') || '';
+      const value = String(persistent || legacySession || '').trim();
+      if (value && !persistent) localStorage.setItem(WRITE_KEY_STORAGE_KEY, value);
+      if (value) sessionStorage.setItem('tpl-backend-write-key', value);
+      return value;
+    } catch (error) {
+      console.warn('Google Sheets 저장 키를 읽지 못했습니다.', error);
+      return '';
+    }
+  }
+
+  function saveWriteKey(value) {
+    const normalized = String(value || '').trim();
+    state.writeKey = normalized;
+    try {
+      if (normalized) {
+        localStorage.setItem(WRITE_KEY_STORAGE_KEY, normalized);
+        sessionStorage.setItem('tpl-backend-write-key', normalized);
+      } else {
+        localStorage.removeItem(WRITE_KEY_STORAGE_KEY);
+        sessionStorage.removeItem('tpl-backend-write-key');
+      }
+    } catch (error) {
+      console.warn('Google Sheets 저장 키를 저장하지 못했습니다.', error);
+    }
+    return normalized;
+  }
+
+  function focusWriteKeyField(message = '') {
+    state.storageSettingsOpen = true;
+    const details = document.getElementById('storageSettings');
+    if (details) details.open = true;
+    const input = document.getElementById('backendWriteKey');
+    if (input) {
+      input.value = state.writeKey || '';
+      window.setTimeout(() => input.focus(), 0);
+    }
+    if (message) toast(message, 'error');
+  }
+
   function loadSettings() {
     let saved = {};
     try {
@@ -65,6 +111,8 @@
     } catch (error) {
       console.warn('설정을 읽지 못했습니다.', error);
     }
+
+    state.writeKey = readWriteKey();
 
     const setupUrl = setupBackendUrlFromLocation();
     const storedUrl = normalizeBackendUrl(saved.backendUrl || '');
@@ -397,15 +445,22 @@
   }
 
   async function requestWithWriteKey(params) {
-    let writeKey = sessionStorage.getItem('tpl-backend-write-key') || '';
+    const writeKey = state.writeKey || readWriteKey();
+    if (!writeKey) {
+      const error = new Error('누적 저장 방식 설정에서 Google Sheets 저장 키를 한 번 입력해 주세요. 입력한 키는 이 교사 기기에 저장되어 다음 제출부터 다시 묻지 않습니다.');
+      error.code = 'WRITE_KEY_NOT_SAVED';
+      throw error;
+    }
     try {
       return await jsonp(state.backendUrl, { ...params, writeKey });
     } catch (error) {
-      if (error.code !== 'WRITE_KEY_REQUIRED' && error.code !== 'INVALID_WRITE_KEY') throw error;
-      writeKey = window.prompt('Google Sheets 저장 키를 입력하세요. 이 브라우저 탭에만 임시 보관됩니다.') || '';
-      if (!writeKey) throw error;
-      sessionStorage.setItem('tpl-backend-write-key', writeKey);
-      return jsonp(state.backendUrl, { ...params, writeKey });
+      if (error.code === 'INVALID_WRITE_KEY') {
+        saveWriteKey('');
+        const input = document.getElementById('backendWriteKey');
+        if (input) input.value = '';
+        error.message = '저장된 Google Sheets 저장 키가 올바르지 않습니다. 누적 저장 방식 설정에서 키를 다시 입력해 주세요.';
+      }
+      throw error;
     }
   }
 
@@ -471,15 +526,15 @@
       <div class="card__body">
         <div class="field"><label for="examSelect">시험</label><select id="examSelect" class="select">${catalog.map((item) => `<option value="${escape(item.id)}"${item.id === state.examId ? ' selected' : ''}>${escape(item.title)}</option>`).join('')}</select></div>
         <div class="form-row"><div class="field"><label for="schoolInput">학교</label><input class="input" id="schoolInput" maxlength="60" placeholder="예: 한국과학영재학교" value="${escape(state.school)}"></div><div class="field"><label for="nameInput">학생 이름</label><input class="input" id="nameInput" maxlength="30" placeholder="예: 김물리" value="${escape(state.name)}"></div></div>
-        <div class="field"><label for="bulkInput">답안 한 번에 붙여넣기</label><textarea class="textarea" id="bulkInput" placeholder="4 5 4 1 3 3 5 5 2 5 4 5 3 5 2 5 2 5 4 1"></textarea><small>공백·쉼표로 구분합니다. 0, X, -는 미기입입니다.</small></div>
+        <div class="field"><label for="bulkInput">답안 한 번에 붙여넣기</label><textarea class="textarea" id="bulkInput" placeholder="엑셀 한 행을 그대로 복사해 붙여넣거나, 4 5 4 1 ... 형식으로 입력"></textarea><small>엑셀·Google Sheets에서 복사한 탭 구분 행은 <strong>빈 셀 위치까지 그대로 보존</strong>합니다. 공백 구분 입력에서는 0, X, -를 미기입으로 사용하세요.</small></div>
         <div class="button-row" style="margin-top:0"><button class="btn btn--secondary btn--small" type="button" id="applyBulk">붙여넣기 적용</button><button class="btn btn--soft btn--small" type="button" id="sampleData">예시 입력</button></div>
         <div class="form-divider"></div>
         <div class="section-label"><strong>문항별 답안</strong><span>정답 +5 · 오답 -1.25 · 미기입 0</span></div>
         <div class="answer-grid" id="answerGrid">${answerGridHtml()}</div>
         <div class="score-preview" id="scorePreview">${previewHtml()}</div>
-        <details style="margin-top:17px"><summary style="cursor:pointer;font-size:12px;font-weight:800;color:var(--brand)">누적 저장 방식 설정</summary>
+        <details id="storageSettings" style="margin-top:17px"${state.storageSettingsOpen ? ' open' : ''}><summary style="cursor:pointer;font-size:12px;font-weight:800;color:var(--brand)">누적 저장 방식 설정</summary>
           <div style="padding-top:13px"><div class="field"><label for="storageMode">저장 방식</label><select class="select" id="storageMode"><option value="local"${state.storageMode === 'local' ? ' selected' : ''}>브라우저 저장 + 링크 내 결과 포함</option><option value="apps-script"${state.storageMode === 'apps-script' ? ' selected' : ''}>Google Sheets + Apps Script</option></select></div>
-          <div class="field${state.storageMode === 'apps-script' ? '' : ' hidden'}" id="backendField"><label for="backendUrl">Apps Script 웹 앱 URL</label><input class="input" id="backendUrl" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec" value="${escape(state.backendUrl)}">${backendStatusHtml()}<small class="backend-setting-note">주소는 입력하는 즉시 이 브라우저에 저장되고, 다음 접속부터 자동으로 연결을 확인합니다. 학생 링크에는 무작위 결과 토큰과 조회용 서버 주소만 들어갑니다. <strong>WRITE_KEY는 보안을 위해 계속 현재 탭에만 임시 저장됩니다.</strong></small><div class="button-row backend-field-actions"><button class="btn btn--primary btn--small" type="button" id="pingBackend">주소 저장·연결 확인</button><button class="btn btn--soft btn--small" type="button" id="copyBackendSetup">다른 기기 설정 링크 복사</button><button class="btn btn--soft btn--small" type="button" id="forgetWriteKey">저장 키 지우기</button><button class="btn btn--ghost btn--small" type="button" id="clearBackendConnection">연결 주소 지우기</button></div></div></div>
+          <div class="field${state.storageMode === 'apps-script' ? '' : ' hidden'}" id="backendField"><label for="backendUrl">Apps Script 웹 앱 URL</label><input class="input" id="backendUrl" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec" value="${escape(state.backendUrl)}">${backendStatusHtml()}<div class="backend-write-key"><label for="backendWriteKey">Google Sheets 저장 키</label><input class="input" id="backendWriteKey" type="password" autocomplete="current-password" spellcheck="false" placeholder="Apps Script의 WRITE_KEY" value="${escape(state.writeKey)}"><small>한 번 입력하면 <strong>이 교사 기기의 브라우저에 계속 저장</strong>되어 학생 제출 때마다 팝업이 나타나지 않습니다. 공용 기기에서는 작업 후 ‘저장 키 지우기’를 누르세요.</small></div><small class="backend-setting-note">Apps Script 주소는 다음 접속부터 자동 연결됩니다. 학생 링크는 서버에서 열 때마다 최신 학생 이력과 통계를 다시 계산합니다.</small><div class="button-row backend-field-actions"><button class="btn btn--primary btn--small" type="button" id="pingBackend">주소 저장·연결 확인</button><button class="btn btn--soft btn--small" type="button" id="copyBackendSetup">다른 기기 설정 링크 복사</button><button class="btn btn--soft btn--small" type="button" id="forgetWriteKey">저장 키 지우기</button><button class="btn btn--ghost btn--small" type="button" id="clearBackendConnection">연결 주소 지우기</button></div></div></div>
         </details>
         <div class="button-row report-create-row"><button class="btn btn--primary btn--copy-report" type="button" id="generateReport"${state.busy ? ' disabled' : ''}><span class="btn-symbol">↗</span><span>${state.busy ? '저장·링크 복사 중…' : state.editingId ? '수정하고 분석 링크 복사' : '성적 분석 링크 생성·복사'}</span></button><button class="btn btn--soft" type="button" id="clearForm">초기화</button></div>
       </div>
@@ -615,12 +670,17 @@
       if (!parsed.length) { toast('답안을 인식하지 못했습니다.', 'error'); return; }
       state.answers = core.normalizeAnswers(parsed, exam().answerCount);
       updatePreviewOnly(true);
-      toast(`${Math.min(parsed.length, exam().answerCount)}개 답안을 적용했습니다.`, 'good');
+      const appliedCount = Math.min(parsed.length, exam().answerCount);
+      const blankCount = state.answers.slice(0, appliedCount).filter((answer) => answer === '').length;
+      toast(`${appliedCount}개 문항 위치를 적용했습니다${blankCount ? ` · 미기입 ${blankCount}개` : ''}.`, 'good');
     });
     document.getElementById('sampleData')?.addEventListener('click', () => {
       state.school = '예시고등학교'; state.name = '김물리';
       state.answers = [...exam().answerKey]; state.answers[2] = 2; state.answers[6] = ''; state.answers[9] = 3; state.answers[13] = 4; state.answers[17] = '';
       render(); toast('기능 확인용 예시 답안을 넣었습니다.');
+    });
+    document.getElementById('storageSettings')?.addEventListener('toggle', (event) => {
+      state.storageSettingsOpen = Boolean(event.target.open);
     });
     document.getElementById('storageMode')?.addEventListener('change', (event) => {
       state.storageMode = event.target.value;
@@ -643,6 +703,14 @@
       event.target.value = state.backendUrl;
       saveSettings();
     });
+    document.getElementById('backendWriteKey')?.addEventListener('input', (event) => {
+      saveWriteKey(event.target.value);
+    });
+    document.getElementById('backendWriteKey')?.addEventListener('change', (event) => {
+      const saved = saveWriteKey(event.target.value);
+      event.target.value = saved;
+      if (saved) toast('Google Sheets 저장 키를 이 기기에 저장했습니다. 다음 제출부터 다시 묻지 않습니다.', 'good');
+    });
     document.getElementById('pingBackend')?.addEventListener('click', () => connectBackend({ force: true }));
     document.getElementById('copyBackendSetup')?.addEventListener('click', async () => {
       syncBackendUrlFromField();
@@ -663,8 +731,10 @@
       toast('Apps Script 연결 주소를 지우고 브라우저 저장 방식으로 전환했습니다.');
     });
     document.getElementById('forgetWriteKey')?.addEventListener('click', () => {
-      sessionStorage.removeItem('tpl-backend-write-key');
-      toast('이 탭에 임시 저장된 Google Sheets 저장 키를 지웠습니다.');
+      saveWriteKey('');
+      const input = document.getElementById('backendWriteKey');
+      if (input) input.value = '';
+      toast('이 기기에 저장된 Google Sheets 저장 키를 지웠습니다.');
     });
     document.getElementById('generateReport')?.addEventListener('click', generate);
     document.getElementById('clearForm')?.addEventListener('click', () => { state.school=''; state.name=''; state.answers=Array(exam().answerCount).fill(''); state.editingId=''; render(); });
@@ -696,8 +766,63 @@
     if (state.storageMode === 'apps-script') {
       syncBackendUrlFromField();
       if (!isValidBackendUrl(state.backendUrl)) { toast('Apps Script의 /exec URL을 입력해 주세요.', 'error'); return false; }
+      state.writeKey = state.writeKey || readWriteKey();
+      if (!state.writeKey) {
+        focusWriteKeyField('Google Sheets 저장 키를 누적 저장 방식 설정에 한 번 입력해 주세요. 이후에는 이 기기에서 다시 묻지 않습니다.');
+        return false;
+      }
     }
     return true;
+  }
+
+  function serverPayload(record) {
+    return {
+      examId: record.examId,
+      round: record.round,
+      school: record.school,
+      name: record.name,
+      answers: record.answers,
+      createdAt: record.createdAt
+    };
+  }
+
+  async function saveRecordToServer(record) {
+    const response = await requestWithWriteKey({ action: 'save', payload: JSON.stringify(serverPayload(record)) });
+    const serverId = response.token || response.id || response.report?.record?.id || record.serverId || '';
+    const savedRecord = serverId ? upsertRecord({ ...record, serverId }) : record;
+    const snapshot = response.report?.record
+      ? response.report
+      : core.buildSnapshot(catalog, savedRecord, loadRecords());
+    return { record: savedRecord, serverId, snapshot };
+  }
+
+  async function ensureRecordLink(record) {
+    let current = record;
+    let snapshot = core.buildSnapshot(catalog, current, loadRecords());
+    let serverId = current.serverId || '';
+    let serverWorked = false;
+
+    if (state.storageMode === 'apps-script' && isValidBackendUrl(state.backendUrl)) {
+      state.writeKey = state.writeKey || readWriteKey();
+      if (!state.writeKey) {
+        focusWriteKeyField('Google Sheets 저장 키를 한 번 입력한 뒤 다시 눌러 주세요.');
+        throw new Error('Google Sheets 저장 키가 저장되지 않았습니다.');
+      }
+      if (!serverId) {
+        const saved = await saveRecordToServer(current);
+        current = saved.record;
+        serverId = saved.serverId;
+        snapshot = saved.snapshot;
+      }
+      serverWorked = Boolean(serverId);
+    }
+
+    return {
+      record: current,
+      snapshot,
+      serverWorked,
+      url: reportUrl(snapshot, serverWorked ? serverId : '')
+    };
   }
 
   async function generate() {
@@ -709,21 +834,21 @@
         school: state.school.trim(), name: state.name.trim(), answers: core.normalizeAnswers(state.answers, exam().answerCount),
         createdAt: new Date().toISOString()
       });
-      let records = loadRecords();
-      let snapshot = core.buildSnapshot(catalog, record, records);
+      let snapshot = core.buildSnapshot(catalog, record, loadRecords());
       let serverId = record.serverId || '';
       let serverWorked = false;
       if (state.storageMode === 'apps-script') {
         saveSettings();
         try {
-          const serverPayload = { examId: record.examId, round: record.round, school: record.school, name: record.name, answers: record.answers, createdAt: record.createdAt };
-          const response = await requestWithWriteKey({ action: 'save', payload: JSON.stringify(serverPayload) });
-          serverId = response.token || response.id || response.report?.record?.id || serverId;
-          if (serverId) record = upsertRecord({ ...record, serverId });
-          if (response.report?.record) snapshot = response.report;
-          serverWorked = true;
+          const saved = await saveRecordToServer(record);
+          record = saved.record;
+          serverId = saved.serverId;
+          snapshot = saved.snapshot;
+          serverWorked = Boolean(serverId);
+          if (!serverWorked) throw new Error('서버가 학생 결과 토큰을 반환하지 않았습니다.');
         } catch (error) {
-          toast(`Google Sheet 저장 실패: ${error.message} 브라우저 백업 링크로 생성합니다.`, 'error');
+          if (error.code === 'WRITE_KEY_NOT_SAVED' || error.code === 'INVALID_WRITE_KEY') focusWriteKeyField();
+          throw new Error(`Google Sheet 저장에 실패하여 학생 링크를 만들지 않았습니다. ${error.message}`);
         }
       }
       const url = reportUrl(snapshot, serverWorked ? serverId : '');
@@ -764,18 +889,23 @@
       state.examId=record.examId; state.school=record.school; state.name=record.name; state.answers=core.normalizeAnswers(record.answers, core.getExam(catalog, record.examId).answerCount); state.editingId=record.id; render(); window.scrollTo({top:0,behavior:'smooth'}); toast('학생 기록을 입력 칸에 불러왔습니다.');
     }
     if (button.dataset.action === 'copy') {
-      const snapshot = core.buildSnapshot(catalog, record, loadRecords());
-      const url = reportUrl(snapshot, record.serverId || '');
       try {
-        await copyText(url);
+        const linked = await ensureRecordLink(record);
+        await copyText(linked.url);
         toast(`${record.name} 학생 성적 분석 링크를 복사했습니다.`, 'good');
+        if (linked.record.id !== record.id || linked.record.serverId !== record.serverId) render();
       } catch (error) {
         toast(`링크 복사 실패: ${error.message}`, 'error');
       }
     }
     if (button.dataset.action === 'open') {
-      const snapshot = core.buildSnapshot(catalog, record, loadRecords());
-      window.open(reportUrl(snapshot, record.serverId || ''), '_blank', 'noopener');
+      try {
+        const linked = await ensureRecordLink(record);
+        window.open(linked.url, '_blank', 'noopener');
+        if (linked.record.id !== record.id || linked.record.serverId !== record.serverId) render();
+      } catch (error) {
+        toast(`성적표 열기 실패: ${error.message}`, 'error');
+      }
     }
     if (button.dataset.action === 'delete') {
       const hasServerRecord = Boolean(record.serverId && state.backendUrl);

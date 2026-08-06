@@ -48,9 +48,32 @@
   }
 
   function parseAnswerText(text, count = 20) {
-    let raw = normalizeText(text);
-    if (!raw) return [];
+    let raw = String(text == null ? '' : text)
+      .replace(/^\uFEFF/, '')
+      .replace(/\r\n?/g, '\n');
+    if (!raw || !raw.replace(/[\s,;/|]+/g, '')) return [];
     Object.entries(circled).forEach(([from, to]) => { raw = raw.split(from).join(to); });
+
+    // Excel/Google Sheets에서 한 행을 복사하면 셀 사이가 탭으로 구분된다.
+    // 이 경우 빈 셀도 문항 위치이므로 filter(Boolean)로 지우지 않고 그대로 보존한다.
+    // 예: "1\t\t4...\t" → 1번=1, 2번=미기입, 마지막 문항=미기입.
+    if (raw.includes('\t')) {
+      const rows = raw.replace(/^\n+|\n+$/g, '').split('\n');
+      const row = rows.find((line) => line.includes('\t') || line.trim() !== '') || '';
+      return row.split('\t').slice(0, count).map(normalizeAnswer);
+    }
+
+    // 쉼표로 구분한 한 행에서도 연속 쉼표를 빈 문항으로 보존한다.
+    const firstLine = raw.replace(/^\n+|\n+$/g, '').split('\n')[0] || '';
+    if (firstLine.includes(',')) {
+      const commaCells = firstLine.split(',');
+      if (commaCells.length > 1 && commaCells.every((cell) => normalizeAnswer(cell) !== null)) {
+        return commaCells.slice(0, count).map(normalizeAnswer);
+      }
+    }
+
+    raw = normalizeText(raw);
+    if (!raw) return [];
 
     // A plain answer sequence such as "2 3 5 - 1" must be handled before
     // removing numbered prefixes. Otherwise the pair "5 -" can be mistaken
@@ -220,10 +243,25 @@
 
   function getStudentHistory(catalog, records, currentRecord) {
     const key = studentKey(currentRecord);
-    return uniqueRecords(records || [])
-      .filter((record) => studentKey(record) === key)
-      .map((record) => enrichRecord(catalog, record))
-      .filter((record) => !record.invalidExam)
+    const current = enrichRecord(catalog, currentRecord);
+    const currentRound = Number(current.round || 0);
+    const latestByExam = new Map();
+
+    uniqueRecords([...(records || []), currentRecord]).forEach((rawRecord) => {
+      if (studentKey(rawRecord) !== key) return;
+      const record = enrichRecord(catalog, rawRecord);
+      if (record.invalidExam) return;
+      // 각 성적표는 자기 회차까지의 기록만 보여준다. 나중에 이전 회차를
+      // 추가하더라도 상위 회차 성적표를 다시 열면 해당 기록이 자동 포함된다.
+      if (currentRound && Number(record.round || 0) > currentRound) return;
+      const previous = latestByExam.get(record.examId);
+      const stamp = String(record.updatedAt || record.createdAt || '');
+      const previousStamp = String(previous?.updatedAt || previous?.createdAt || '');
+      if (!previous || stamp >= previousStamp) latestByExam.set(record.examId, record);
+    });
+
+    latestByExam.set(current.examId, current);
+    return [...latestByExam.values()]
       .sort((a, b) => Number(a.round || 0) - Number(b.round || 0) || String(a.updatedAt || a.createdAt || '').localeCompare(String(b.updatedAt || b.createdAt || '')));
   }
 

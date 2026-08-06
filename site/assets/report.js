@@ -11,6 +11,10 @@
   const circled = ['', '①', '②', '③', '④', '⑤'];
   let currentSnapshot = null;
   let dataSource = 'link';
+  let activeLink = null;
+  let lastServerLoadAt = 0;
+  let serverRefreshInFlight = null;
+  let practiceEventsBound = false;
 
   const esc = core.escapeHtml;
   const fmt = core.formatScore;
@@ -48,15 +52,26 @@
 
   function parseLink() {
     const params = new URLSearchParams(location.hash.replace(/^#/, ''));
-    const id = params.get(config.serverHashKey || 'id') || '';
+    let id = params.get(config.serverHashKey || 'id') || '';
     const api = params.get('api') || config.backendUrl || savedBackendUrl() || '';
     const encoded = params.get(config.reportHashKey || 'report') || '';
     let fallback = null;
+    let migratedFromFallback = false;
     if (encoded) {
       try { fallback = core.decodePayload(encoded); }
       catch (error) { console.warn('링크 백업을 해석하지 못했습니다.', error); }
     }
-    return { id, api, fallback };
+
+    // 예전 #report= 정적 링크 안에 Apps Script 토큰이 남아 있으면
+    // 자동으로 서버 조회 링크처럼 처리하여 기존 링크도 최신 이력으로 전환한다.
+    if (!id && fallback?.record) {
+      const candidate = String(fallback.record.serverId || fallback.record.id || '').trim();
+      if (/^[A-Fa-f0-9]{24,64}$/.test(candidate) && api) {
+        id = candidate;
+        migratedFromFallback = true;
+      }
+    }
+    return { id, api, fallback, migratedFromFallback };
   }
 
   function questionStats(cohort) {
@@ -96,7 +111,7 @@
 
   function sourceLabel(snapshot) {
     const count = Number(snapshot.cohort?.total || 0);
-    if (dataSource === 'server') return `Google Sheet 누적 데이터 · ${count}명`;
+    if (dataSource === 'server') return `Google Sheet 최신 데이터 · ${count}명`;
     return `링크 생성 시점 데이터 · ${count}명`;
   }
 
@@ -104,7 +119,7 @@
     return `<header class="report-toolbar no-print"><div class="report-toolbar__inner">
       <a class="brand report-brand" href="./" aria-label="Young's Physics 입력 화면"><img class="brand__logo" src="assets/youngs-physics-logo.png" alt="Young's Physics"><span class="brand__descriptor">${esc(snapshot.record.name)} 학생 리포트</span></a>
       <nav class="report-top-nav" aria-label="리포트 메뉴"><a class="report-top-nav__link is-active" href="#dashboard">대시보드</a><a class="report-top-nav__link" href="#scorecard">성적 분석</a><a class="report-top-nav__link" href="#learning-analysis">강점·취약점</a><a class="report-top-nav__link" href="#question-analysis">문항 분석</a><a class="report-top-nav__link" href="#wrong-answer-learning">오답 학습</a></nav>
-      <div class="report-toolbar__buttons"><button class="btn btn--soft btn--small" id="copyLink" title="링크 복사"><span class="btn-symbol">↗</span><span>링크 복사</span></button><button class="btn btn--secondary report-export-btn" id="wordButton" title="Word 저장"><span class="btn-symbol">W</span><span>Word 저장</span></button><button class="btn btn--primary report-export-btn" id="printButton" title="PDF 저장 또는 인쇄"><span class="btn-symbol">PDF</span><span>PDF·인쇄</span></button></div>
+      <div class="report-toolbar__buttons">${dataSource === 'server' ? '<button class="btn btn--soft btn--small report-refresh-btn" id="refreshReport" title="Google Sheet에서 최신 분석 다시 불러오기"><span class="btn-symbol">↻</span><span>최신 분석</span></button>' : ''}<button class="btn btn--soft btn--small" id="copyLink" title="링크 복사"><span class="btn-symbol">↗</span><span>링크 복사</span></button><button class="btn btn--secondary report-export-btn" id="wordButton" title="Word 저장"><span class="btn-symbol">W</span><span>Word 저장</span></button><button class="btn btn--primary report-export-btn" id="printButton" title="PDF 저장 또는 인쇄"><span class="btn-symbol">PDF</span><span>PDF·인쇄</span></button></div>
     </div></header>`;
   }
 
@@ -377,6 +392,8 @@
 
   function bindPracticeQuizzes() {
     app.querySelectorAll('.practice-quiz').forEach((quiz) => applyPracticeState(quiz, readPracticeState(Number(quiz.dataset.questionNo))));
+    if (practiceEventsBound) return;
+    practiceEventsBound = true;
 
     app.addEventListener('change', (event) => {
       const input = event.target.closest('.practice-option input');
@@ -418,12 +435,51 @@
     });
   }
 
+  async function fetchLatestServerSnapshot(options = {}) {
+    const { silent = false, force = false } = options;
+    if (!activeLink?.id || !activeLink?.api) return false;
+    if (!force && Date.now() - lastServerLoadAt < 3000) return false;
+    if (serverRefreshInFlight) return serverRefreshInFlight;
+
+    const button = document.getElementById('refreshReport');
+    const original = button?.innerHTML || '';
+    if (button) {
+      button.disabled = true;
+      button.innerHTML = '<span class="btn-symbol">↻</span><span>불러오는 중</span>';
+    }
+
+    serverRefreshInFlight = jsonp(activeLink.api, { action: 'get', id: activeLink.id })
+      .then((response) => {
+        const raw = response.report || response;
+        dataSource = 'server';
+        lastServerLoadAt = Date.now();
+        render(normalizeSnapshot(raw));
+        if (!silent) notify('Google Sheet에서 최신 성적과 이전 회차 분석을 다시 불러왔습니다.');
+        return true;
+      })
+      .catch((error) => {
+        console.warn('최신 성적 다시 불러오기 실패', error);
+        if (!silent) alert(`최신 분석을 불러오지 못했습니다: ${error.message}`);
+        return false;
+      })
+      .finally(() => {
+        serverRefreshInFlight = null;
+        const currentButton = document.getElementById('refreshReport');
+        if (currentButton && original) {
+          currentButton.disabled = false;
+          currentButton.innerHTML = original;
+        }
+      });
+    return serverRefreshInFlight;
+  }
+
   function render(snapshot) {
     currentSnapshot=snapshot;
     app.innerHTML=toolbar(snapshot)+`<div class="report-workspace">${reportSidebar(snapshot)}${reportDocument(snapshot)}</div>`;
     document.getElementById('printButton').addEventListener('click',()=>window.print());
     document.getElementById('copyLink').addEventListener('click',async()=>{await copyText(location.href);notify('리포트 링크를 복사했습니다.');});
     document.getElementById('wordButton').addEventListener('click',downloadWord);
+    document.getElementById('refreshReport')?.addEventListener('click',()=>fetchLatestServerSnapshot({ force: true }));
     bindPracticeQuizzes();
   }
 
@@ -463,11 +519,26 @@
   }
 
   async function init() {
-    const link=parseLink();
+    activeLink = parseLink();
+    const link = activeLink;
     let raw=null;
     let loadError=null;
     if(link.id&&link.api){
-      try{const response=await jsonp(link.api,{action:'get',id:link.id});raw=response.report||response;dataSource='server';}
+      try{
+        const response=await jsonp(link.api,{action:'get',id:link.id});
+        raw=response.report||response;
+        dataSource='server';
+        lastServerLoadAt=Date.now();
+        if (link.migratedFromFallback) {
+          const canonical = new URL(location.href);
+          const hash = new URLSearchParams();
+          hash.set(config.serverHashKey || 'id', link.id);
+          hash.set('api', link.api);
+          canonical.hash = hash.toString();
+          history.replaceState(null, '', canonical.href);
+          activeLink = { id: link.id, api: link.api, fallback: null, migratedFromFallback: false };
+        }
+      }
       catch(error){console.warn('서버 데이터 로드 실패',error);loadError=error;raw=link.fallback;dataSource='link';}
     }else raw=link.fallback;
     if(!raw){showError(loadError||new Error('유효한 학생 결과가 링크에 포함되어 있지 않습니다.'));return;}
@@ -483,6 +554,13 @@
   window.addEventListener('afterprint',()=>{
     printDetailState.forEach(({node,open})=>{node.open=open;});
     printDetailState=[];
+  });
+
+  window.addEventListener('focus', () => {
+    if (dataSource === 'server') fetchLatestServerSnapshot({ silent: true });
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && dataSource === 'server') fetchLatestServerSnapshot({ silent: true });
   });
 
   init();

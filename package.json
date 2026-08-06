@@ -1,6 +1,6 @@
 {
   "name": "tpl-score-report",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
   "description": "Young's Physics public-safe TPL score report site with 1회~10회 exams and no embedded student records",
   "scripts": {}

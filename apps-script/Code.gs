@@ -303,7 +303,7 @@ function getReport_(id) {
   if (!/^[A-Fa-f0-9]{24,64}$/.test(token)) throw apiError_('INVALID_ID', '학생 결과 링크의 ID가 올바르지 않습니다.');
   var item = findByToken_(sheet_(), token);
   if (!item) throw apiError_('NOT_FOUND', '삭제되었거나 존재하지 않는 학생 결과입니다.');
-  return { ok: true, token: token, report: buildSnapshot_(item.record) };
+  return { ok: true, token: token, dynamic: true, report: buildSnapshot_(item.record) };
 }
 
 function listReports_(limitValue) {
@@ -435,8 +435,9 @@ function buildSnapshot_(currentRecord) {
   var history = history_(records, currentRecord);
   var analysis = analysis_(exam, enriched, cohort, history);
   return {
-    version: 1,
+    version: 2,
     generatedAt: new Date().toISOString(),
+    dynamicHistory: true,
     record: {
       id: enriched.id,
       serverId: enriched.serverId || enriched.id,
@@ -528,9 +529,15 @@ function cohort_(records, examId, currentRecord) {
 
 function history_(records, currentRecord) {
   var key = studentKey_(currentRecord);
+  var currentRound = Number(currentRecord.round || getExam_(currentRecord.examId).round || 0);
   var latest = {};
   records.forEach(function (record) {
     if (studentKey_(record) !== key) return;
+    var recordRound = Number(record.round || getExam_(record.examId).round || 0);
+    // 현재 성적표보다 뒤 회차는 제외하고, 현재 회차까지의 기록은 입력 순서와
+    // 관계없이 매번 다시 모은다. 따라서 5회를 먼저 저장한 뒤 4회를 추가해도
+    // 기존 5회 링크를 다시 열면 4회 결과가 자동으로 포함된다.
+    if (currentRound && recordRound > currentRound) return;
     var previous = latest[record.examId];
     if (!previous || String(record.updatedAt || record.createdAt) >= String(previous.updatedAt || previous.createdAt)) latest[record.examId] = record;
   });

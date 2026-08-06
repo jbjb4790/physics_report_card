@@ -1346,3 +1346,60 @@ tbody tr:hover { background: #f6faff; }
   }
   .link-modal-actions .btn { flex: 1 1 100%; }
 }
+
+/* v2.5.0 · persistent teacher write key and live report refresh */
+.backend-write-key {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 13px;
+  border: 1px solid #d6e2f2;
+  border-radius: 13px;
+  background: #f8fbff;
+}
+.backend-write-key label {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+}
+.backend-write-key .input {
+  letter-spacing: .08em;
+}
+.backend-write-key small {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+.backend-write-key small strong { color: #36506f; }
+
+.report-toolbar__buttons .report-refresh-btn {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.report-toolbar__buttons .report-refresh-btn .btn-symbol {
+  font-size: 17px;
+  line-height: 1;
+}
+.report-toolbar__buttons .report-refresh-btn:disabled .btn-symbol {
+  animation: report-refresh-spin .8s linear infinite;
+}
+@keyframes report-refresh-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 820px) {
+  .report-toolbar__buttons .report-refresh-btn {
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+}
+@media (max-width: 600px) {
+  .report-toolbar__buttons .report-refresh-btn {
+    width: 42px;
+    min-width: 42px;
+    min-height: 42px;
+  }
+}
