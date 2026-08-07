@@ -1,3 +1,10 @@
+# Young's Physics TPL Score Lab v3.1.0
+
+## v3.1.0 핵심 수정
+- 기존 1~5회 학생 225명을 Apps Script의 비공개 LegacySeed.gs에서 Reports 시트로 한 번만 초기화합니다.
+- 새 학생 저장 시 같은 시험의 기존 응시자 전체를 기준으로 평균·석차를 계산합니다.
+- LegacySeed.gs에는 실제 학생 정보가 있으므로 GitHub에 업로드하지 않습니다.
+
 # Young's Physics TPL 성적 분석 사이트 — 공개 배포 안전본
 
 GitHub Pages에 바로 배포할 수 있도록 정리한 1회~10회 통합 프로젝트입니다.

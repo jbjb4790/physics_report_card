@@ -116,7 +116,7 @@
 
   function sourceLabel(snapshot) {
     const count = Number(snapshot.cohort?.total || 0);
-    if (dataSource === 'server') return `Google Sheet 최신 데이터 · ${count}명`;
+    if (dataSource === 'server') return `동일 시험 전체 응시 데이터 · ${count}명`;
     return `링크 생성 시점 데이터 · ${count}명`;
   }
 
