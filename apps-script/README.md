@@ -1,3 +1,33 @@
+
+## v3.3.0 학생 링크 무결성 복구
+
+새 `Code.gs`를 배포한 뒤 Apps Script 편집기에서 다음 함수를 한 번 실행합니다.
+
+```text
+initializeReportIntegrity
+```
+
+이 함수는 먼저 `Reports_backup_날짜_시간` 백업 시트를 만든 뒤, 같은 `시험 + 학교 + 이름`의 중복 행에서는 가장 최근 수정 기록을 남깁니다. 또한 중복되거나 형식이 잘못된 토큰을 새로 발급하고, `Token` 열과 `RecordJSON`의 `id/serverId`를 일치시킵니다.
+
+점검만 하려면 다음 함수를 실행합니다.
+
+```text
+checkReportIntegrity
+```
+
+정상 결과는 `duplicateTokens: 0`, `invalidTokens: 0`, `duplicateStudentRows: 0`입니다. 토큰을 재발급한 학생은 기존의 잘못된 링크 대신 교사용 사이트에서 새 링크를 다시 복사해 전달해야 합니다.
+
+# Apps Script v3.3.0 설치 중요사항
+
+1. Code.gs를 교체합니다.
+2. 별도로 제공된 **비공개 LegacySeed.gs**를 Apps Script 프로젝트에 추가합니다.
+3. `initializeLegacyRecords`를 한 번 실행합니다.
+4. `initializeReportIntegrity`를 한 번 실행합니다.
+5. `checkReportIntegrity` 결과에서 중복값이 모두 0인지 확인합니다.
+6. 새 버전으로 웹 앱을 재배포합니다.
+
+LegacySeed.gs는 학생 개인정보를 포함하므로 GitHub에 올리지 마세요.
+
 # Google Sheets + Apps Script 누적 저장 설치
 
 이 폴더의 `Code.gs`는 GitHub Pages 입력 화면이 Google Sheet에 학생 결과를 저장하고, 학생별 무작위 토큰 링크로 결과를 불러오게 하는 JSONP 웹 앱입니다.

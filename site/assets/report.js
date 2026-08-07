@@ -54,6 +54,7 @@
     const params = new URLSearchParams(location.hash.replace(/^#/, ''));
     let id = params.get(config.serverHashKey || 'id') || '';
     const api = params.get('api') || config.backendUrl || savedBackendUrl() || '';
+    const expectedFingerprint = params.get('k') || '';
     const encoded = params.get(config.reportHashKey || 'report') || '';
     let fallback = null;
     let migratedFromFallback = false;
@@ -71,7 +72,16 @@
         migratedFromFallback = true;
       }
     }
-    return { id, api, fallback, migratedFromFallback };
+    return { id, api, fallback, migratedFromFallback, expectedFingerprint };
+  }
+
+  function assertLinkFingerprint(snapshot, link) {
+    const expected = String(link?.expectedFingerprint || '').trim().toLowerCase();
+    if (!expected || typeof core.identityFingerprint !== 'function') return;
+    const actual = core.identityFingerprint(snapshot?.record || {}).toLowerCase();
+    if (actual !== expected) {
+      throw new Error('학생 링크와 서버의 학생 정보가 일치하지 않습니다. 다른 학생의 성적표가 표시되지 않도록 열람을 차단했습니다. 교사에게 새 링크를 요청해 주세요.');
+    }
   }
 
   function questionStats(cohort) {
@@ -456,9 +466,11 @@
     serverRefreshInFlight = jsonp(activeLink.api, { action: 'get', id: activeLink.id })
       .then((response) => {
         const raw = response.report || response;
+        const snapshot = normalizeSnapshot(raw);
+        assertLinkFingerprint(snapshot, activeLink);
         dataSource = 'server';
         lastServerLoadAt = Date.now();
-        render(normalizeSnapshot(raw));
+        render(snapshot);
         if (!silent) notify('Google Sheet에서 최신 성적과 이전 회차 분석을 다시 불러왔습니다.');
         return true;
       })
@@ -1562,15 +1574,20 @@
           const hash = new URLSearchParams();
           hash.set(config.serverHashKey || 'id', link.id);
           hash.set('api', link.api);
+          if (link.expectedFingerprint) hash.set('k', link.expectedFingerprint);
           canonical.hash = hash.toString();
           history.replaceState(null, '', canonical.href);
-          activeLink = { id: link.id, api: link.api, fallback: null, migratedFromFallback: false };
+          activeLink = { id: link.id, api: link.api, fallback: null, migratedFromFallback: false, expectedFingerprint: link.expectedFingerprint || '' };
         }
       }
       catch(error){console.warn('서버 데이터 로드 실패',error);loadError=error;raw=link.fallback;dataSource='link';}
     }else raw=link.fallback;
     if(!raw){showError(loadError||new Error('유효한 학생 결과가 링크에 포함되어 있지 않습니다.'));return;}
-    try{render(normalizeSnapshot(raw));}
+    try{
+      const snapshot=normalizeSnapshot(raw);
+      assertLinkFingerprint(snapshot,link);
+      render(snapshot);
+    }
     catch(error){console.error(error);showError(error,Boolean(link.fallback));}
   }
 

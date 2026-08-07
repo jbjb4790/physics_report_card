@@ -16,6 +16,146 @@
     ? core.normalizeSchool(value)
     : (core.normalizeText(value) || '미입력');
 
+  function recordIdentity(record) {
+    const examId = core.normalizeText(record?.examId || '');
+    const school = normalizeSchool(record?.school);
+    const name = core.normalizeText(record?.name);
+    return `${examId}::${core.studentKey({ school, name })}`;
+  }
+
+  function recordTimestamp(record) {
+    const value = Date.parse(String(record?.updatedAt || record?.createdAt || ''));
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function serverLocalId(serverId) {
+    const token = String(serverId || '').trim();
+    return token ? `server-${token}` : '';
+  }
+
+  function normalizeLocalRecord(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const currentExam = core.getExam(catalog, raw.examId || state.examId);
+    const name = core.normalizeText(raw.name);
+    if (!currentExam || !name) return null;
+    const serverId = String(raw.serverId || '').trim();
+    return {
+      ...raw,
+      examId: currentExam.id,
+      round: Number(raw.round || currentExam.round || 0),
+      school: normalizeSchool(raw.school),
+      name,
+      answers: core.normalizeAnswers(raw.answers, currentExam.answerCount),
+      serverId,
+      createdAt: raw.createdAt || raw.updatedAt || new Date().toISOString(),
+      updatedAt: raw.updatedAt || raw.createdAt || new Date().toISOString()
+    };
+  }
+
+  function repairRecords(records) {
+    const byIdentity = new Map();
+    (records || []).map(normalizeLocalRecord).filter(Boolean).forEach((record) => {
+      const identity = recordIdentity(record);
+      const previous = byIdentity.get(identity);
+      if (!previous) {
+        byIdentity.set(identity, record);
+        return;
+      }
+      const newer = recordTimestamp(record) >= recordTimestamp(previous) ? record : previous;
+      const older = newer === record ? previous : record;
+      byIdentity.set(identity, {
+        ...older,
+        ...newer,
+        serverId: newer.serverId || older.serverId || '',
+        createdAt: older.createdAt || newer.createdAt,
+        updatedAt: newer.updatedAt || older.updatedAt
+      });
+    });
+
+    const usedIds = new Set();
+    const serverOwners = new Map();
+    const repaired = [];
+    byIdentity.forEach((raw, identity) => {
+      const record = { ...raw };
+      let serverId = String(record.serverId || '').trim();
+      if (serverId) {
+        const owner = serverOwners.get(serverId);
+        if (owner && owner !== identity) {
+          // A stale browser ID/token must never make two different students share one link.
+          // Clear the later token so the next open/copy operation re-saves this exact student.
+          serverId = '';
+          record.serverId = '';
+          record.integrityWarning = 'duplicate-server-token-cleared';
+        } else {
+          serverOwners.set(serverId, identity);
+        }
+      }
+
+      let id = serverId ? serverLocalId(serverId) : String(record.id || '').trim();
+      if (!id || usedIds.has(id)) id = core.makeId('local');
+      usedIds.add(id);
+      repaired.push({ ...record, id, serverId });
+    });
+    return repaired;
+  }
+
+  function recordRef(record) {
+    const serverId = String(record?.serverId || '').trim();
+    return serverId ? `server:${serverId}` : `local:${String(record?.id || '').trim()}`;
+  }
+
+  function findRecordByRef(records, ref) {
+    const value = String(ref || '');
+    if (value.startsWith('server:')) {
+      const serverId = value.slice(7);
+      return (records || []).find((record) => String(record.serverId || '') === serverId) || null;
+    }
+    if (value.startsWith('local:')) {
+      const id = value.slice(6);
+      return (records || []).find((record) => String(record.id || '') === id) || null;
+    }
+    return null;
+  }
+
+  function currentInputIdentity() {
+    return recordIdentity({ examId: state.examId, school: state.school, name: state.name });
+  }
+
+  function resolveExistingRecord(records, editingId, inputRecord) {
+    const identity = recordIdentity(inputRecord);
+    const editingCandidate = editingId ? (records || []).find((item) => item.id === editingId) : null;
+    if (editingCandidate && recordIdentity(editingCandidate) === identity) return editingCandidate;
+    return (records || []).find((item) => recordIdentity(item) === identity) || null;
+  }
+
+  function detachEditingIfIdentityChanged() {
+    if (!state.editingId) return;
+    const records = loadRecords();
+    const editing = records.find((record) => record.id === state.editingId);
+    const original = state.editingIdentity || (editing ? recordIdentity(editing) : '');
+    if (!editing || !original || currentInputIdentity() !== original) {
+      state.editingId = '';
+      state.editingIdentity = '';
+      document.querySelectorAll('.js-generate-report .entry-action-dock__button-text strong, .js-generate-report > span:last-child')
+        .forEach((node) => { node.textContent = generateActionLabel(); });
+    }
+  }
+
+  function assertSnapshotMatchesRecord(snapshot, expectedRecord) {
+    const actual = snapshot?.record;
+    if (!actual) {
+      const error = new Error('서버가 학생 성적 데이터를 반환하지 않았습니다.');
+      error.code = 'REPORT_IDENTITY_MISSING';
+      throw error;
+    }
+    if (recordIdentity(actual) !== recordIdentity(expectedRecord)) {
+      const error = new Error(`요청한 ${expectedRecord.name} 학생과 서버가 반환한 ${actual.name || '다른 학생'}의 정보가 일치하지 않습니다. 잘못된 링크 생성을 차단했습니다. 서버 기록을 새로고침한 뒤 다시 시도해 주세요.`);
+      error.code = 'REPORT_IDENTITY_MISMATCH';
+      throw error;
+    }
+    return snapshot;
+  }
+
   const state = {
     examId: catalog[0]?.id || '',
     school: '',
@@ -36,7 +176,8 @@
     search: '',
     busy: false,
     busyMessage: '',
-    editingId: ''
+    editingId: '',
+    editingIdentity: ''
   };
 
   function normalizeBackendUrl(value) {
@@ -181,13 +322,21 @@
   }
 
   function loadRecords() {
-    return readStoredRecords().map((record) => record && typeof record === 'object'
-      ? { ...record, school: normalizeSchool(record.school) }
-      : record);
+    return repairRecords(readStoredRecords());
   }
 
   function saveRecords(records) {
-    localStorage.setItem(config.storageKey, JSON.stringify(records || []));
+    localStorage.setItem(config.storageKey, JSON.stringify(repairRecords(records || [])));
+  }
+
+  function repairStoredRecords() {
+    const before = readStoredRecords();
+    const after = repairRecords(before);
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      localStorage.setItem(config.storageKey, JSON.stringify(after));
+      console.info(`학생 기록 식별자 ${before.length}개를 점검하고 중복 ID를 복구했습니다.`);
+    }
+    return after;
   }
 
   function normalizedSeedRecords() {
@@ -248,26 +397,40 @@
 
   function upsertRecord(record) {
     const records = loadRecords();
-    const key = core.studentKey(record);
-    const index = records.findIndex((item) => item.examId === record.examId && core.studentKey(item) === key);
+    const normalized = normalizeLocalRecord(record);
+    if (!normalized) throw new Error('저장할 학생 기록이 올바르지 않습니다.');
+    const identity = recordIdentity(normalized);
+    const serverId = String(normalized.serverId || '').trim();
+    let index = serverId
+      ? records.findIndex((item) => String(item.serverId || '') === serverId)
+      : -1;
+    if (index < 0) index = records.findIndex((item) => recordIdentity(item) === identity);
     const now = new Date().toISOString();
+
     if (index >= 0) {
       const previous = records[index];
+      const nextServerId = serverId || previous.serverId || '';
       records[index] = {
         ...previous,
-        ...record,
-        id: previous.id || record.id,
-        serverId: record.serverId || previous.serverId || '',
-        createdAt: previous.createdAt || record.createdAt || now,
+        ...normalized,
+        id: nextServerId ? serverLocalId(nextServerId) : (previous.id || normalized.id || core.makeId('local')),
+        serverId: nextServerId,
+        createdAt: previous.createdAt || normalized.createdAt || now,
         updatedAt: now
       };
       saveRecords(records);
-      return records[index];
+      return loadRecords().find((item) => recordIdentity(item) === identity) || records[index];
     }
-    const created = { ...record, id: record.id || core.makeId('local'), createdAt: record.createdAt || now, updatedAt: now };
+
+    const created = {
+      ...normalized,
+      id: serverId ? serverLocalId(serverId) : (normalized.id || core.makeId('local')),
+      createdAt: normalized.createdAt || now,
+      updatedAt: now
+    };
     records.push(created);
     saveRecords(records);
-    return created;
+    return loadRecords().find((item) => recordIdentity(item) === identity) || created;
   }
 
   function deleteRecord(id) {
@@ -472,6 +635,7 @@
     if (useServer) {
       hash.set(config.serverHashKey || 'id', serverId);
       hash.set('api', state.backendUrl);
+      if (typeof core.identityFingerprint === 'function') hash.set('k', core.identityFingerprint(snapshot.record));
     } else {
       hash.set(config.reportHashKey || 'report', core.encodePayload(snapshot));
     }
@@ -510,7 +674,7 @@
     if (!serverId) return null;
     return {
       ...raw,
-      id: raw.id || serverId,
+      id: serverLocalId(serverId),
       serverId,
       examId: currentExam.id,
       round: Number(raw.round || currentExam.round || 0),
@@ -531,27 +695,28 @@
     let updated = 0;
 
     incoming.forEach((record) => {
-      const key = core.studentKey(record);
-      const index = records.findIndex((item) => item.examId === record.examId && core.studentKey(item) === key);
+      let index = records.findIndex((item) => String(item.serverId || '') === String(record.serverId || ''));
+      if (index < 0) index = records.findIndex((item) => recordIdentity(item) === recordIdentity(record));
       if (index >= 0) {
         const previous = records[index];
         records[index] = {
           ...previous,
           ...record,
-          id: previous.id || record.id,
+          id: serverLocalId(record.serverId),
           serverId: record.serverId,
           createdAt: record.createdAt || previous.createdAt,
           updatedAt: record.updatedAt || previous.updatedAt
         };
         updated += 1;
       } else {
-        records.push(record);
+        records.push({ ...record, id: serverLocalId(record.serverId) });
         added += 1;
       }
     });
 
     saveRecords(records);
-    return { records, added, updated, serverCount: incoming.length };
+    const repaired = loadRecords();
+    return { records: repaired, added, updated, serverCount: incoming.length };
   }
 
   async function fetchAllServerReports() {
@@ -958,7 +1123,7 @@
     if (!filtered.length) return '';
     return filtered.map((record) => {
       const enriched = core.enrichRecord(catalog, record);
-      return `<tr data-id="${escape(record.id)}"><td><span class="student-name">${escape(record.name)}</span><span class="student-school">${escape(record.school)}</span></td><td>${escape(enriched.examTitle || record.examId)}</td><td class="score-cell">${core.formatScore(enriched.score)}</td><td><div class="status-dots">${statusDots(record)}</div></td><td>${core.formatDate(record.updatedAt || record.createdAt)}</td><td><div class="row-actions"><button class="btn btn--soft btn--small" data-action="edit">수정</button><button class="btn btn--primary btn--small" data-action="copy">링크 복사</button><button class="btn btn--secondary btn--small" data-action="open">열기</button><button class="btn btn--danger btn--small" data-action="delete">삭제</button></div></td></tr>`;
+      return `<tr data-record-ref="${escape(recordRef(record))}"><td><span class="student-name">${escape(record.name)}</span><span class="student-school">${escape(record.school)}</span></td><td>${escape(enriched.examTitle || record.examId)}</td><td class="score-cell">${core.formatScore(enriched.score)}</td><td><div class="status-dots">${statusDots(record)}</div></td><td>${core.formatDate(record.updatedAt || record.createdAt)}</td><td><div class="row-actions"><button class="btn btn--soft btn--small" data-action="edit">수정</button><button class="btn btn--primary btn--small" data-action="copy">링크 복사</button><button class="btn btn--secondary btn--small" data-action="open">열기</button><button class="btn btn--danger btn--small" data-action="delete">삭제</button></div></td></tr>`;
     }).join('');
   }
 
@@ -1067,11 +1232,18 @@
   function bindEvents() {
     bindAnswerInputs();
     document.getElementById('examSelect')?.addEventListener('change', (event) => {
-      state.examId = event.target.value; state.answers = Array(core.getExam(catalog, state.examId).answerCount).fill(''); render();
+      state.examId = event.target.value;
+      state.answers = Array(core.getExam(catalog, state.examId).answerCount).fill('');
+      detachEditingIfIdentityChanged();
+      render();
     });
-    document.getElementById('schoolInput')?.addEventListener('input', (event) => { state.school = event.target.value; });
+    document.getElementById('schoolInput')?.addEventListener('input', (event) => {
+      state.school = event.target.value;
+      detachEditingIfIdentityChanged();
+    });
     document.getElementById('nameInput')?.addEventListener('input', (event) => {
       state.name = event.target.value;
+      detachEditingIfIdentityChanged();
       const label = document.getElementById('entryStudentLabel');
       if (label) label.textContent = core.normalizeText(state.name) || '학생 이름 입력 전';
     });
@@ -1169,6 +1341,7 @@
     state.name = '';
     state.answers = Array(exam().answerCount).fill('');
     state.editingId = '';
+    state.editingIdentity = '';
     render();
     window.setTimeout(() => document.getElementById('nameInput')?.focus(), 0);
   }
@@ -1217,17 +1390,22 @@
       school: normalizeSchool(record.school),
       name: core.normalizeText(record.name),
       answers: record.answers,
-      createdAt: record.createdAt
+      createdAt: record.createdAt,
+      clientRecordId: record.id || '',
+      identityFingerprint: typeof core.identityFingerprint === 'function' ? core.identityFingerprint(record) : ''
     };
   }
 
   async function saveRecordToServer(record) {
     const response = await requestWithWriteKey({ action: 'save', payload: JSON.stringify(serverPayload(record)) });
+    if (response.report?.record) assertSnapshotMatchesRecord(response.report, record);
     const serverId = response.token || response.id || response.report?.record?.id || record.serverId || '';
-    const savedRecord = serverId ? upsertRecord({ ...record, serverId }) : record;
+    if (!serverId) throw new Error('서버가 학생별 결과 토큰을 반환하지 않았습니다.');
+    const savedRecord = upsertRecord({ ...record, id: serverLocalId(serverId), serverId });
     const snapshot = response.report?.record
       ? response.report
       : core.buildSnapshot(catalog, savedRecord, loadRecords());
+    assertSnapshotMatchesRecord(snapshot, savedRecord);
     return { record: savedRecord, serverId, snapshot };
   }
 
@@ -1249,6 +1427,7 @@
       snapshot = saved.snapshot;
       serverWorked = Boolean(serverId);
     }
+    assertSnapshotMatchesRecord(snapshot, current);
 
     return {
       record: current,
@@ -1262,9 +1441,14 @@
     if (state.busy || !validateStudent()) return;
     state.busy = true; state.busyMessage = '저장·링크 복사 중…'; render();
     try {
-      const existing = state.editingId ? loadRecords().find((item) => item.id === state.editingId) : null;
+      const records = loadRecords();
+      const existing = resolveExistingRecord(records, state.editingId, {
+        examId: state.examId,
+        school: state.school,
+        name: state.name
+      });
       const draft = {
-        id: state.editingId || core.makeId('local'),
+        id: existing?.id || core.makeId('local'),
         examId: state.examId,
         round: exam().round,
         school: normalizeSchool(state.school),
@@ -1305,8 +1489,12 @@
       } catch (copyError) {
         console.warn('생성된 링크 자동 복사 실패', copyError);
       }
+      assertSnapshotMatchesRecord(snapshot, record);
       openLinkModal(url, snapshot, serverWorked, copied);
-      state.editingId = record.id;
+      // Do not carry the previous student's local ID into the next entry.
+      // Re-submitting the same identity still updates it by exam + school + name.
+      state.editingId = '';
+      state.editingIdentity = '';
       const cohortTotal = Number(snapshot?.cohort?.total || 1);
       toast(copied ? `${record.name} 학생 링크를 복사했습니다. 같은 시험 ${cohortTotal}명 기준으로 평균과 석차를 계산했습니다.` : `${record.name} 학생의 성적 분석 링크를 생성했습니다. 같은 시험 ${cohortTotal}명 기준입니다.`, copied ? 'good' : '');
       if (serverWorked) syncServerRecords({ silent: true, force: true });
@@ -1332,12 +1520,12 @@
 
   async function recordAction(event) {
     const button = event.target.closest('button[data-action]');
-    const row = button?.closest('tr[data-id]');
+    const row = button?.closest('tr[data-record-ref]');
     if (!button || !row) return;
-    const record = loadRecords().find((item) => item.id === row.dataset.id);
+    const record = findRecordByRef(loadRecords(), row.dataset.recordRef);
     if (!record) return;
     if (button.dataset.action === 'edit') {
-      state.examId=record.examId; state.school=record.school; state.name=record.name; state.answers=core.normalizeAnswers(record.answers, core.getExam(catalog, record.examId).answerCount); state.editingId=record.id; render(); window.scrollTo({top:0,behavior:'smooth'}); toast('학생 기록을 입력 칸에 불러왔습니다.');
+      state.examId=record.examId; state.school=record.school; state.name=record.name; state.answers=core.normalizeAnswers(record.answers, core.getExam(catalog, record.examId).answerCount); state.editingId=record.id; state.editingIdentity=recordIdentity(record); render(); window.scrollTo({top:0,behavior:'smooth'}); toast('학생 기록을 입력 칸에 불러왔습니다.');
     }
     if (button.dataset.action === 'copy') {
       try {
@@ -1418,9 +1606,18 @@
   }
 
 
+  window.YPRecordIntegrity = Object.freeze({
+    repairRecords,
+    recordIdentity,
+    recordRef,
+    findRecordByRef,
+    resolveExistingRecord
+  });
+
   loadSettings();
   const seedResult = ensureSeedRecords(false);
   if (seedResult.added) console.info(`기본 1·2·3·4·5회 데이터 ${seedResult.added}명을 불러왔습니다.`);
+  repairStoredRecords();
   render();
   autoConnectBackend();
   startServerSyncPolling();

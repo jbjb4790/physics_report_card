@@ -5,11 +5,329 @@
  * Script Properties
  * - WRITE_KEY (required): teacher write password
  * - SPREADSHEET_ID (optional): required only for a standalone script
+ *
+ * Optional private companion file
+ * - LegacySeed.gs: defines LEGACY_SEED_VERSION and LEGACY_SEED_RECORDS.
+ *   Keep it in Apps Script only; never upload student data to GitHub.
  */
 
-var SERVER_VERSION = '3.0.0';
+var SERVER_VERSION = '3.3.0';
 var SHEET_NAME = 'Reports';
 var HEADERS = ['Token','CreatedAt','UpdatedAt','ExamId','Round','StudentKey','School','Name','AnswersJSON','RecordJSON'];
+
+var LEGACY_SEED_PROPERTY = 'LEGACY_SEED_IMPORTED_VERSION';
+var REPORT_INTEGRITY_PROPERTY = 'REPORT_INTEGRITY_REPAIR_VERSION';
+var REPORT_INTEGRITY_VERSION = '3.3.0';
+
+function legacySeedAvailable_() {
+  return typeof LEGACY_SEED_VERSION !== 'undefined' &&
+    typeof LEGACY_SEED_RECORDS !== 'undefined' &&
+    Array.isArray(LEGACY_SEED_RECORDS) &&
+    LEGACY_SEED_RECORDS.length > 0;
+}
+
+function legacySeedStatus_() {
+  var props = PropertiesService.getScriptProperties();
+  var importedVersion = props.getProperty(LEGACY_SEED_PROPERTY) || '';
+  return {
+    available: legacySeedAvailable_(),
+    version: legacySeedAvailable_() ? String(LEGACY_SEED_VERSION || '') : '',
+    importedVersion: importedVersion,
+    imported: legacySeedAvailable_() && importedVersion === String(LEGACY_SEED_VERSION || ''),
+    expected: legacySeedAvailable_() ? LEGACY_SEED_RECORDS.length : 0
+  };
+}
+
+function initializeLegacyRecords() {
+  var result = importLegacyRecords_(true);
+  return '기존 1~5회 학생 데이터 초기화 완료: 추가 ' + result.inserted + '명, 기존 유지 ' + result.skipped + '명, Reports 전체 ' + result.total + '명';
+}
+
+
+function checkCohortCounts() {
+  ensureLegacyRecords_();
+  ensureReportIntegrity_();
+  var counts = {};
+  readAll_().forEach(function (item) {
+    var examId = item.record.examId;
+    counts[examId] = (counts[examId] || 0) + 1;
+  });
+  var result = {
+    total: Object.keys(counts).reduce(function (sum, key) { return sum + counts[key]; }, 0),
+    byExam: counts,
+    legacySeed: legacySeedStatus_()
+  };
+  console.log(JSON.stringify(result));
+  return JSON.stringify(result);
+}
+
+function resetLegacyImportFlag() {
+  PropertiesService.getScriptProperties().deleteProperty(LEGACY_SEED_PROPERTY);
+  return '기존 데이터 초기화 표시를 지웠습니다. initializeLegacyRecords를 다시 실행하세요.';
+}
+
+function initializeReportIntegrity() {
+  ensureLegacyRecords_();
+  var result = repairReportIntegrity_(true);
+  return '학생 링크 무결성 복구 완료: 기존 ' + result.before + '행, 정리 후 ' + result.after + '행, 중복 학생행 제거 ' + result.duplicateStudentRowsRemoved + '개, 중복·잘못된 토큰 재발급 ' + result.tokensReissued + '개';
+}
+
+function checkReportIntegrity() {
+  var result = inspectReportIntegrity_();
+  console.log(JSON.stringify(result));
+  return JSON.stringify(result);
+}
+
+function ensureReportIntegrity_() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty(REPORT_INTEGRITY_PROPERTY) === REPORT_INTEGRITY_VERSION) return { repaired: false, version: REPORT_INTEGRITY_VERSION };
+  return repairReportIntegrity_(false);
+}
+
+function parseIntegrityRows_(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { records: [], malformed: 0 };
+  var values = sheet.getRange(2, 1, lastRow - 1, HEADERS.length).getValues();
+  var records = [];
+  var malformed = 0;
+  values.forEach(function (row, index) {
+    try {
+      var rawRecord = JSON.parse(String(row[9] || '{}'));
+      var examId = String(row[3] || rawRecord.examId || '').trim();
+      var exam = getExam_(examId);
+      var school = normalizeSchool_(row[6] || rawRecord.school);
+      var name = normalizeText_(row[7] || rawRecord.name);
+      if (!name) throw new Error('이름 없음');
+      var answers;
+      try { answers = JSON.parse(String(row[8] || '[]')); }
+      catch (answerError) { answers = rawRecord.answers || []; }
+      answers = normalizeAnswers_(answers, exam.answerCount);
+      var createdAt = String(row[1] || rawRecord.createdAt || new Date().toISOString());
+      var updatedAt = String(row[2] || rawRecord.updatedAt || createdAt);
+      records.push({
+        originalRow: index + 2,
+        token: String(row[0] || '').trim(),
+        identity: exam.id + '|' + studentKey_({ school: school, name: name }),
+        exam: exam,
+        record: {
+          id: String(rawRecord.id || ''),
+          serverId: String(rawRecord.serverId || ''),
+          examId: exam.id,
+          round: Number(rawRecord.round || row[4] || exam.round || 0),
+          school: school,
+          name: name,
+          answers: answers,
+          createdAt: createdAt,
+          updatedAt: updatedAt,
+          source: rawRecord.source || ''
+        }
+      });
+    } catch (error) {
+      malformed += 1;
+      console.warn('Reports ' + (index + 2) + '행 무결성 확인 실패: ' + error.message);
+    }
+  });
+  return { records: records, malformed: malformed };
+}
+
+function inspectReportIntegrity_() {
+  var parsed = parseIntegrityRows_(sheet_());
+  var tokenOwners = {};
+  var identities = {};
+  var duplicateTokens = 0;
+  var invalidTokens = 0;
+  var duplicateStudentRows = 0;
+  parsed.records.forEach(function (item) {
+    if (!/^[A-Fa-f0-9]{24,64}$/.test(item.token)) invalidTokens += 1;
+    else if (tokenOwners[item.token] && tokenOwners[item.token] !== item.identity) duplicateTokens += 1;
+    else tokenOwners[item.token] = item.identity;
+    if (identities[item.identity]) duplicateStudentRows += 1;
+    identities[item.identity] = true;
+  });
+  return {
+    serverVersion: SERVER_VERSION,
+    rows: parsed.records.length,
+    malformedRows: parsed.malformed,
+    duplicateTokens: duplicateTokens,
+    invalidTokens: invalidTokens,
+    duplicateStudentRows: duplicateStudentRows,
+    repairVersion: PropertiesService.getScriptProperties().getProperty(REPORT_INTEGRITY_PROPERTY) || ''
+  };
+}
+
+function repairReportIntegrity_(force) {
+  var props = PropertiesService.getScriptProperties();
+  if (!force && props.getProperty(REPORT_INTEGRITY_PROPERTY) === REPORT_INTEGRITY_VERSION) {
+    return { repaired: false, version: REPORT_INTEGRITY_VERSION, before: readAll_().length, after: readAll_().length, duplicateStudentRowsRemoved: 0, tokensReissued: 0, malformedRowsRemoved: 0 };
+  }
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = sheet_();
+    var parsed = parseIntegrityRows_(sheet);
+    var latest = {};
+    parsed.records.forEach(function (item) {
+      var previous = latest[item.identity];
+      var itemTime = Date.parse(item.record.updatedAt || item.record.createdAt) || 0;
+      var previousTime = previous ? (Date.parse(previous.record.updatedAt || previous.record.createdAt) || 0) : -1;
+      if (!previous || itemTime > previousTime || (itemTime === previousTime && item.originalRow > previous.originalRow)) latest[item.identity] = item;
+    });
+
+    var retained = Object.keys(latest).map(function (identity) { return latest[identity]; })
+      .sort(function (a, b) { return a.originalRow - b.originalRow; });
+    var usedTokens = {};
+    var tokensReissued = 0;
+    var rows = retained.map(function (item) {
+      var token = item.token;
+      if (!/^[A-Fa-f0-9]{24,64}$/.test(token) || usedTokens[token]) {
+        token = Utilities.getUuid().replace(/-/g, '');
+        tokensReissued += 1;
+      }
+      usedTokens[token] = true;
+      var record = item.record;
+      record.id = token;
+      record.serverId = token;
+      record.school = normalizeSchool_(record.school);
+      record.name = normalizeText_(record.name);
+      record.answers = normalizeAnswers_(record.answers, item.exam.answerCount);
+      var key = studentKey_(record);
+      return [
+        token,
+        record.createdAt,
+        record.updatedAt,
+        record.examId,
+        record.round,
+        key,
+        record.school,
+        record.name,
+        JSON.stringify(record.answers),
+        JSON.stringify(record)
+      ];
+    });
+
+    var backupName = '';
+    if (sheet.copyTo) {
+      try {
+        var stamp = Utilities.formatDate ? Utilities.formatDate(new Date(), Session.getScriptTimeZone ? Session.getScriptTimeZone() : 'Asia/Seoul', 'yyyyMMdd_HHmmss') : String(Date.now());
+        backupName = SHEET_NAME + '_backup_' + stamp;
+        sheet.copyTo(spreadsheet_()).setName(backupName);
+      } catch (backupError) {
+        console.warn('Reports 백업 시트를 만들지 못했습니다: ' + backupError.message);
+        backupName = '';
+      }
+    }
+
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, HEADERS.length).clearContent();
+    if (rows.length) sheet.getRange(2, 1, rows.length, HEADERS.length).setValues(rows);
+    props.setProperty(REPORT_INTEGRITY_PROPERTY, REPORT_INTEGRITY_VERSION);
+    return {
+      repaired: true,
+      version: REPORT_INTEGRITY_VERSION,
+      before: parsed.records.length,
+      after: rows.length,
+      duplicateStudentRowsRemoved: parsed.records.length - retained.length,
+      tokensReissued: tokensReissued,
+      malformedRowsRemoved: parsed.malformed,
+      backupSheet: backupName
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function ensureLegacyRecords_() {
+  if (!legacySeedAvailable_()) return { available: false, inserted: 0, skipped: 0, total: readAll_().length };
+  var status = legacySeedStatus_();
+  if (status.imported) return { available: true, imported: true, inserted: 0, skipped: status.expected, total: readAll_().length, version: status.version };
+  return importLegacyRecords_(false);
+}
+
+function importLegacyRecords_(force) {
+  if (!legacySeedAvailable_()) {
+    throw apiError_('LEGACY_SEED_MISSING', '기존 1~5회 학생 데이터 파일(LegacySeed.gs)이 Apps Script 프로젝트에 없습니다.');
+  }
+
+  var props = PropertiesService.getScriptProperties();
+  var version = String(LEGACY_SEED_VERSION || '');
+  if (!force && props.getProperty(LEGACY_SEED_PROPERTY) === version) {
+    return { available: true, imported: true, version: version, inserted: 0, skipped: LEGACY_SEED_RECORDS.length, total: readAll_().length };
+  }
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = sheet_();
+    var existing = readAll_(sheet);
+    var byExact = {};
+    var byExamName = {};
+    existing.forEach(function (item) {
+      var record = item.record;
+      byExact[record.examId + '|' + studentKey_(record)] = true;
+      var nameKey = record.examId + '|' + normalizeText_(record.name).replace(/\s+/g, '').toLowerCase();
+      byExamName[nameKey] = true;
+    });
+
+    var rows = [];
+    var skipped = 0;
+    var now = new Date().toISOString();
+    LEGACY_SEED_RECORDS.forEach(function (input) {
+      var exam = getExam_(input.examId);
+      var school = normalizeSchool_(input.school);
+      var name = normalizeText_(input.name);
+      if (!name) return;
+      var answers = normalizeAnswers_(input.answers, exam.answerCount);
+      var key = studentKey_({ school: school, name: name });
+      var exactKey = exam.id + '|' + key;
+      var nameKey = exam.id + '|' + name.replace(/\s+/g, '').toLowerCase();
+
+      // The source Excel files did not include school names. If the same student
+      // was already saved later with a school name, preserve the newer server row.
+      if (byExact[exactKey] || byExamName[nameKey]) {
+        skipped += 1;
+        return;
+      }
+
+      var token = Utilities.getUuid().replace(/-/g, '');
+      var createdAt = input.createdAt || now;
+      var record = {
+        id: token,
+        serverId: token,
+        examId: exam.id,
+        round: exam.round,
+        school: school,
+        name: name,
+        answers: answers,
+        createdAt: createdAt,
+        updatedAt: createdAt,
+        source: 'legacy-excel-seed'
+      };
+      rows.push([
+        token, createdAt, createdAt, exam.id, exam.round, key, school, name,
+        JSON.stringify(answers), JSON.stringify(record)
+      ]);
+      byExact[exactKey] = true;
+      byExamName[nameKey] = true;
+    });
+
+    if (rows.length) {
+      var startRow = sheet.getLastRow() + 1;
+      sheet.getRange(startRow, 1, rows.length, HEADERS.length).setValues(rows);
+    }
+    props.setProperty(LEGACY_SEED_PROPERTY, version);
+    return {
+      available: true,
+      imported: true,
+      version: version,
+      inserted: rows.length,
+      skipped: skipped,
+      total: sheet.getLastRow() > 1 ? sheet.getLastRow() - 1 : 0
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
 
 var EXAMS = {
   'tpl-mid-01': {
@@ -158,7 +476,7 @@ function doGet(e) {
   try {
     var action = String((e && e.parameter && e.parameter.action) || 'ping');
     if (action === 'ping') {
-      response = { ok: true, message: 'TPL 성적 서버 연결에 성공했습니다.', serverVersion: SERVER_VERSION, cohortScope: 'same-exam-google-sheet', serverTime: new Date().toISOString() };
+      response = { ok: true, message: 'TPL 성적 서버 연결에 성공했습니다.', serverVersion: SERVER_VERSION, cohortScope: 'same-exam-google-sheet', legacySeed: legacySeedStatus_(), reportIntegrity: inspectReportIntegrity_(), serverTime: new Date().toISOString() };
     } else if (action === 'save') {
       assertWriteKey_(e.parameter.writeKey);
       response = saveReport_(e.parameter.payload);
@@ -173,6 +491,9 @@ function doGet(e) {
     } else if (action === 'delete') {
       assertWriteKey_(e.parameter.writeKey);
       response = deleteReport_(e.parameter.id);
+    } else if (action === 'repair') {
+      assertWriteKey_(e.parameter.writeKey);
+      response = { ok: true, serverVersion: SERVER_VERSION, repair: repairReportIntegrity_(true) };
     } else {
       throw apiError_('UNKNOWN_ACTION', '지원하지 않는 작업입니다: ' + action);
     }
@@ -253,6 +574,8 @@ function initializeSheet() {
 }
 
 function saveReport_(payloadText) {
+  ensureLegacyRecords_();
+  ensureReportIntegrity_();
   var input;
   try {
     input = JSON.parse(String(payloadText || '{}'));
@@ -266,6 +589,10 @@ function saveReport_(payloadText) {
   if (!name) throw apiError_('NAME_REQUIRED', '학생 이름을 입력해 주세요.');
   var answers = normalizeAnswers_(input.answers, exam.answerCount);
   var key = studentKey_({ school: school, name: name });
+  var expectedFingerprint = identityFingerprint_({ examId: exam.id, school: school, name: name });
+  if (input.identityFingerprint && String(input.identityFingerprint).toLowerCase() !== expectedFingerprint) {
+    throw apiError_('IDENTITY_FINGERPRINT_MISMATCH', '학생 이름·학교·시험 식별값이 요청과 일치하지 않습니다.');
+  }
   var now = new Date().toISOString();
 
   var lock = LockService.getScriptLock();
@@ -303,6 +630,8 @@ function saveReport_(payloadText) {
 
 
 function saveReportsBatch_(payloadText) {
+  ensureLegacyRecords_();
+  ensureReportIntegrity_();
   var inputs;
   try {
     inputs = JSON.parse(String(payloadText || '[]'));
@@ -331,6 +660,10 @@ function saveReportsBatch_(payloadText) {
       if (!name) throw apiError_('NAME_REQUIRED', '학생 이름을 입력해 주세요.');
       var answers = normalizeAnswers_(input.answers, exam.answerCount);
       var key = studentKey_({ school: school, name: name });
+      var expectedFingerprint = identityFingerprint_({ examId: exam.id, school: school, name: name });
+      if (input.identityFingerprint && String(input.identityFingerprint).toLowerCase() !== expectedFingerprint) {
+        throw apiError_('IDENTITY_FINGERPRINT_MISMATCH', name + ' 학생의 이름·학교·시험 식별값이 요청과 일치하지 않습니다.');
+      }
       var mapKey = exam.id + '|' + key;
       var found = byStudentExam[mapKey] || null;
       var now = new Date().toISOString();
@@ -380,14 +713,18 @@ function saveReportsBatch_(payloadText) {
 }
 
 function getReport_(id) {
+  ensureLegacyRecords_();
+  ensureReportIntegrity_();
   var token = String(id || '').trim();
   if (!/^[A-Fa-f0-9]{24,64}$/.test(token)) throw apiError_('INVALID_ID', '학생 결과 링크의 ID가 올바르지 않습니다.');
   var item = findByToken_(sheet_(), token);
   if (!item) throw apiError_('NOT_FOUND', '삭제되었거나 존재하지 않는 학생 결과입니다.');
-  return { ok: true, token: token, dynamic: true, serverVersion: SERVER_VERSION, report: buildSnapshot_(item.record) };
+  return { ok: true, token: token, dynamic: true, serverVersion: SERVER_VERSION, recordFingerprint: identityFingerprint_(item.record), report: buildSnapshot_(item.record) };
 }
 
 function listReports_(limitValue, offsetValue) {
+  ensureLegacyRecords_();
+  ensureReportIntegrity_();
   var limit = Math.max(1, Math.min(500, Number(limitValue || 100)));
   var offset = Math.max(0, Number(offsetValue || 0));
   var all = readAll_().sort(function (a, b) {
@@ -408,6 +745,8 @@ function listReports_(limitValue, offsetValue) {
 }
 
 function deleteReport_(id) {
+  ensureLegacyRecords_();
+  ensureReportIntegrity_();
   var token = String(id || '').trim();
   var sheet = sheet_();
   var item = findByToken_(sheet, token);
@@ -426,8 +765,9 @@ function findByStudentExam_(sheet, studentKey, examId) {
 
 function findByToken_(sheet, token) {
   var items = readAll_(sheet);
-  for (var i = 0; i < items.length; i += 1) if (items[i].token === token) return items[i];
-  return null;
+  var matches = items.filter(function (item) { return item.token === token; });
+  if (matches.length > 1) throw apiError_('DUPLICATE_TOKEN', '같은 학생 링크 토큰이 여러 기록에 연결되어 있습니다. 교사가 initializeReportIntegrity를 실행해야 합니다.');
+  return matches.length ? matches[0] : null;
 }
 
 function readAll_(providedSheet) {
@@ -438,13 +778,27 @@ function readAll_(providedSheet) {
   var items = [];
   values.forEach(function (row, index) {
     try {
-      var token = String(row[0] || '');
+      var token = String(row[0] || '').trim();
       var record = JSON.parse(String(row[9] || '{}'));
-      if (record && record.examId) {
-        record.school = normalizeSchool_(record.school || row[6]);
-        record.name = normalizeText_(record.name || row[7]);
+      var examId = String(row[3] || record.examId || '').trim();
+      var exam = getExam_(examId);
+      var school = normalizeSchool_(row[6] || record.school);
+      var name = normalizeText_(row[7] || record.name);
+      var answers;
+      try { answers = JSON.parse(String(row[8] || '[]')); }
+      catch (answerError) { answers = record.answers || []; }
+      if (token && name) {
+        record.id = token;
+        record.serverId = token;
+        record.examId = exam.id;
+        record.round = Number(row[4] || record.round || exam.round || 0);
+        record.school = school;
+        record.name = name;
+        record.answers = normalizeAnswers_(answers, exam.answerCount);
+        record.createdAt = String(row[1] || record.createdAt || new Date().toISOString());
+        record.updatedAt = String(row[2] || record.updatedAt || record.createdAt);
+        items.push({ token: token, record: record, row: index + 2 });
       }
-      if (token && record && record.examId && record.name) items.push({ token: token, record: record, row: index + 2 });
     } catch (error) {
       console.warn('Reports ' + (index + 2) + '행을 읽지 못했습니다: ' + error.message);
     }
@@ -537,6 +891,8 @@ function buildSnapshot_(currentRecord) {
     cohortScope: 'same-exam-google-sheet',
     generatedAt: new Date().toISOString(),
     dynamicHistory: true,
+    legacySeed: legacySeedStatus_(),
+    recordFingerprint: identityFingerprint_(enriched),
     record: {
       id: enriched.id,
       serverId: enriched.serverId || enriched.id,
@@ -612,6 +968,7 @@ function cohort_(records, examId, currentRecord) {
   var topCount = total ? Math.max(1, Math.ceil(total * 0.25)) : 0;
   return {
     source: 'google-sheets-same-exam',
+    legacySeedImported: legacySeedStatus_().imported,
     total: total,
     average: round_(average_(scores), 2),
     median: round_(median_(scores), 2),
@@ -755,6 +1112,18 @@ function normalizeSchool_(value) {
 
 function studentKey_(record) {
   return normalizeKey_(normalizeSchool_(record && record.school)) + '::' + normalizeKey_(record && record.name);
+}
+
+function identityFingerprint_(record) {
+  var text = normalizeKey_(record && record.examId) + '::' + studentKey_(record);
+  var hash = 0x811c9dc5;
+  for (var i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  var hex = (hash >>> 0).toString(16);
+  while (hex.length < 8) hex = '0' + hex;
+  return hex;
 }
 
 function normalizeAnswer_(value) {
