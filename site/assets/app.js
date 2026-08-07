@@ -832,6 +832,7 @@
     if (serverSyncTimer) window.clearInterval(serverSyncTimer);
     const interval = Math.max(60000, Number(config.serverSyncIntervalMs || 120000));
     serverSyncTimer = window.setInterval(() => {
+  // v3.2.0 · top sticky score/save dock for student answer entry.
       if (document.visibilityState !== 'visible') return;
       if (state.storageMode !== 'apps-script' || state.serverSyncBusy || !readWriteKey()) return;
       syncServerRecords({ silent: true });
@@ -858,9 +859,29 @@
     }).join('');
   }
 
+  function currentGrade() {
+    return core.grade(exam(), state.answers);
+  }
+
   function previewHtml() {
-    const result = core.grade(exam(), state.answers);
+    const result = currentGrade();
     return `<div class="score-preview__row"><div><div class="quick-stat__label">현재 입력 기준</div><div class="score-preview__score">${core.formatScore(result.score)}<small>/100</small></div></div><div class="score-preview__counts"><span class="count-pill good">정답 ${result.correct}</span><span class="count-pill bad">오답 ${result.wrong}</span><span class="count-pill blank">미기입 ${result.blank}</span></div></div>`;
+  }
+
+  function generateActionLabel() {
+    if (state.busy) return state.busyMessage || '저장·성적표 생성 중…';
+    return state.editingId ? '수정 저장 및 성적표 생성' : '저장 및 성적표 생성';
+  }
+
+  function entryLiveScoreHtml() {
+    const result = currentGrade();
+    const answered = result.correct + result.wrong;
+    const student = core.normalizeText(state.name) || '학생 이름 입력 전';
+    return `<div class="entry-live-score__identity"><span class="entry-live-score__eyebrow">현재 학생 점수</span><strong class="entry-live-score__student" id="entryStudentLabel">${escape(student)}</strong></div><div class="entry-live-score__value">${core.formatScore(result.score)}<small>/100</small></div><div class="entry-live-score__details"><span class="count-pill good">정답 ${result.correct}</span><span class="count-pill bad">오답 ${result.wrong}</span><span class="count-pill blank">미기입 ${result.blank}</span><span class="entry-live-score__answered">입력 ${answered}/${exam().answerCount}</span></div>`;
+  }
+
+  function entryActionDockHtml() {
+    return `<div class="entry-action-dock" id="entryActionDock" role="region" aria-label="학생 점수와 성적표 생성"><div class="entry-live-score" id="entryLiveScore" aria-live="polite">${entryLiveScoreHtml()}</div><div class="entry-action-dock__actions"><button class="btn btn--primary btn--copy-report js-generate-report" type="button" id="generateReportTop"${state.busy ? ' disabled' : ''}><span class="btn-symbol">✓</span><span class="entry-action-dock__button-text"><strong>${generateActionLabel()}</strong><small>Google Sheets 저장 후 결과 링크 자동 복사</small></span></button><button class="btn btn--soft entry-clear-btn js-clear-form" type="button" id="clearFormTop"${state.busy ? ' disabled' : ''}><span aria-hidden="true">↺</span><span>초기화</span></button></div></div>`;
   }
 
   function quickStatsHtml(records) {
@@ -906,6 +927,7 @@
     return `<section id="student-entry" class="card sticky-card anchor-section">
       <div class="card__head"><div><h2>학생 답안 입력</h2><p>학생 이름과 20문항 답안을 입력하세요. 학교는 선택 입력입니다.</p></div><span class="tag">${modeText}</span></div>
       <div class="card__body">
+        ${entryActionDockHtml()}
         <div class="field"><label for="examSelect">시험</label><select id="examSelect" class="select">${catalog.map((item) => `<option value="${escape(item.id)}"${item.id === state.examId ? ' selected' : ''}>${escape(item.title)}</option>`).join('')}</select></div>
         <div class="form-row"><div class="field"><label for="schoolInput">학교 <span class="field-optional">선택</span></label><input class="input" id="schoolInput" maxlength="60" placeholder="비워두면 ‘미입력’으로 저장됩니다" value="${escape(state.school)}" aria-describedby="schoolInputHelp"><small id="schoolInputHelp">학교를 입력하지 않아도 제출할 수 있으며, 성적표에는 <strong>미입력</strong>으로 표시됩니다.</small></div><div class="field"><label for="nameInput">학생 이름</label><input class="input" id="nameInput" maxlength="30" placeholder="예: 김물리" value="${escape(state.name)}"></div></div>
         <div class="field"><label for="bulkInput">답안 한 번에 붙여넣기</label><textarea class="textarea" id="bulkInput" placeholder="엑셀 한 행을 그대로 복사해 붙여넣거나, 4 5 4 1 ... 형식으로 입력"></textarea><small>엑셀·Google Sheets에서 복사한 탭 구분 행은 <strong>빈 셀 위치까지 그대로 보존</strong>합니다. 공백 구분 입력에서는 0, X, -를 미기입으로 사용하세요.</small></div>
@@ -918,7 +940,7 @@
           <div style="padding-top:13px"><div class="field"><label for="storageMode">저장 방식</label><select class="select" id="storageMode"><option value="apps-script"${state.storageMode === 'apps-script' ? ' selected' : ''}>Google Sheets + Apps Script · 모든 교사 기기 동기화</option><option value="local"${state.storageMode === 'local' ? ' selected' : ''}${config.backendRequiredForSaves ? ' disabled' : ''}>브라우저 임시 저장 · 이 기기에서만 확인</option></select></div>
           <div class="field${state.storageMode === 'apps-script' ? '' : ' hidden'}" id="backendField"><label for="backendUrl">Apps Script 웹 앱 URL</label><input class="input" id="backendUrl" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec" value="${escape(state.backendUrl)}">${backendStatusHtml()}<div class="backend-write-key"><label for="backendWriteKey">Google Sheets 저장 키</label><input class="input" id="backendWriteKey" type="password" autocomplete="current-password" spellcheck="false" placeholder="Apps Script의 WRITE_KEY" value="${escape(state.writeKey)}"><small>한 번 입력하면 <strong>이 교사 기기의 브라우저에 계속 저장</strong>되어 학생 제출 때마다 팝업이 나타나지 않습니다. 공용 기기에서는 작업 후 ‘저장 키 지우기’를 누르세요.</small></div><small class="backend-setting-note">학생 결과는 Google Sheets를 원본으로 저장합니다. 다른 컴퓨터에서는 같은 저장 키를 <strong>처음 한 번만</strong> 입력하면 기존 학생 목록이 자동으로 동기화됩니다.</small><div class="button-row backend-field-actions"><button class="btn btn--primary btn--small" type="button" id="pingBackend">연결 확인·학생 기록 동기화</button><button class="btn btn--soft btn--small" type="button" id="copyBackendSetup">다른 기기 연결 주소 복사</button><button class="btn btn--soft btn--small" type="button" id="forgetWriteKey">저장 키 지우기</button><button class="btn btn--ghost btn--small" type="button" id="clearBackendConnection">연결 주소 지우기</button></div></div></div>
         </details>
-        <div class="button-row report-create-row"><button class="btn btn--primary btn--copy-report" type="button" id="generateReport"${state.busy ? ' disabled' : ''}><span class="btn-symbol">↗</span><span>${state.busy ? (state.busyMessage || '저장·링크 복사 중…') : state.editingId ? '수정하고 분석 링크 복사' : '성적 분석 링크 생성·복사'}</span></button><button class="btn btn--soft" type="button" id="clearForm">초기화</button></div>
+        <div class="button-row report-create-row report-create-row--bottom"><button class="btn btn--primary btn--copy-report js-generate-report" type="button" id="generateReport"${state.busy ? ' disabled' : ''}><span class="btn-symbol">↗</span><span>${generateActionLabel()}·링크 복사</span></button><button class="btn btn--soft js-clear-form" type="button" id="clearForm"${state.busy ? ' disabled' : ''}>초기화</button></div>
       </div>
     </section>`;
   }
@@ -984,6 +1006,8 @@
     }
     const preview = document.getElementById('scorePreview');
     if (preview) preview.innerHTML = previewHtml();
+    const liveScore = document.getElementById('entryLiveScore');
+    if (liveScore) liveScore.innerHTML = entryLiveScoreHtml();
   }
 
   function focusAnswer(index) {
@@ -1046,7 +1070,11 @@
       state.examId = event.target.value; state.answers = Array(core.getExam(catalog, state.examId).answerCount).fill(''); render();
     });
     document.getElementById('schoolInput')?.addEventListener('input', (event) => { state.school = event.target.value; });
-    document.getElementById('nameInput')?.addEventListener('input', (event) => { state.name = event.target.value; });
+    document.getElementById('nameInput')?.addEventListener('input', (event) => {
+      state.name = event.target.value;
+      const label = document.getElementById('entryStudentLabel');
+      if (label) label.textContent = core.normalizeText(state.name) || '학생 이름 입력 전';
+    });
     document.getElementById('applyBulk')?.addEventListener('click', () => {
       const input = document.getElementById('bulkInput');
       const parsed = core.parseAnswerText(input.value, exam().answerCount);
@@ -1131,9 +1159,18 @@
       renderRecordsArea();
       toast('이 기기에 저장된 Google Sheets 저장 키를 지웠습니다.');
     });
-    document.getElementById('generateReport')?.addEventListener('click', generate);
-    document.getElementById('clearForm')?.addEventListener('click', () => { state.school=''; state.name=''; state.answers=Array(exam().answerCount).fill(''); state.editingId=''; render(); });
+    document.querySelectorAll('.js-generate-report').forEach((button) => button.addEventListener('click', generate));
+    document.querySelectorAll('.js-clear-form').forEach((button) => button.addEventListener('click', clearStudentForm));
     bindRecordEvents();
+  }
+
+  function clearStudentForm() {
+    state.school = '';
+    state.name = '';
+    state.answers = Array(exam().answerCount).fill('');
+    state.editingId = '';
+    render();
+    window.setTimeout(() => document.getElementById('nameInput')?.focus(), 0);
   }
 
   function bindRecordEvents() {

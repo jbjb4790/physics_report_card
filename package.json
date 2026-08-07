@@ -1,8 +1,8 @@
 {
   "name": "tpl-score-report",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "private": true,
-  "description": "Young's Physics TPL score report site with same-exam cohort synchronization, cross-device records, optional school entry, and screen-faithful DOCX export",
+  "description": "Young's Physics TPL score report site with same-exam cohort synchronization, cross-device records, optional school entry, screen-faithful DOCX export, and top-of-form live score/save controls",
   "scripts": {
     "test": "node tests/core.test.js && node tests/apps-script.test.cjs",
     "test:browser": "python3 tests/cohort_rank_smoke.py"
