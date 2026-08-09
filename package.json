@@ -1,9 +1,9 @@
 {
   "name": "tpl-score-report",
-  "version": "3.3.0",
+  "version": "3.6.0",
   "private": true,
-  "description": "Young's Physics TPL score report site with collision-safe student record IDs, verified per-student links, server integrity repair, same-exam cohort statistics, screen-faithful DOCX export, and top-of-form live score/save controls",
+  "description": "Young's Physics TPL score report site with automatic revised round-6 answer/option corrections, same-exam duplicate-name numbering, collision-safe student links, Google Sheets cohort statistics, screen-faithful DOCX export, and top-of-form live score/save controls",
   "scripts": {
-    "test": "node tests/link_identity_regression.test.js && node tests/apps_script_integrity.test.js"
+    "test": "node tests/link_identity_regression.test.js && node tests/apps_script_integrity.test.js && node tests/round6_revision.test.js"
   }
 }

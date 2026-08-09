@@ -6,14 +6,14 @@
   <title>TPL 성적 분석 사용 안내</title>
   <link rel="icon" href="assets/youngs-physics-mark-64.png" type="image/png">
   <link rel="apple-touch-icon" href="assets/youngs-physics-mark-192.png">
-  <link rel="stylesheet" href="assets/styles.css?v=3.3.0">
+  <link rel="stylesheet" href="assets/styles.css?v=3.6.0">
   <style>
     .guide{max-width:900px;margin:32px auto;padding:0 18px 70px}.guide h1{letter-spacing:-.04em}.guide h2{margin-top:36px}.guide pre,.guide code{font-family:ui-monospace,monospace}.guide code{background:#edf2f7;padding:2px 5px;border-radius:5px}.step{padding:20px;border:1px solid var(--line);border-radius:16px;background:#fff;margin:12px 0}.guide li+li{margin-top:8px}.mode-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.mode-grid .step{margin:0}@media(max-width:700px){.mode-grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
 <header class="site-header"><div class="site-header__inner"><a class="brand" href="./" aria-label="Young's Physics 입력 화면"><img class="brand__logo" src="assets/youngs-physics-logo.png" alt="Young's Physics"><span class="brand__descriptor">TPL SCORE LAB GUIDE</span></a><nav class="top-nav" aria-label="안내 메뉴"><a class="top-nav__link" href="./">대시보드</a><a class="top-nav__link is-active" href="guide.html">사용 안내</a></nav><a class="btn btn--primary btn--small" href="./"><span class="btn-symbol">←</span>입력 화면</a></div></header>
-<main class="guide"><section class="guide-section"><h2>학생 링크가 다른 학생으로 열릴 때</h2><p>v3.3.0부터 학생 기록의 로컬 ID와 Google Sheets 토큰을 분리하고, 링크를 열기 전에 시험·학교·학생 이름의 식별 지문을 검증합니다. 업데이트 후 학생 기록에서 <strong>서버 기록 새로고침</strong>을 누르고, Apps Script에서 <code>initializeReportIntegrity</code>를 한 번 실행하세요. 이전에 잘못 복사된 링크는 해당 학생 행의 <strong>링크 복사</strong> 버튼으로 새로 발급해야 합니다.</p></section><section class="step"><h2>상단 빠른 저장 패널</h2><p>학생 이름과 답안을 입력하면 입력 카드 상단에 현재 점수와 정답·오답·미기입 수가 즉시 표시됩니다. 답안 구간을 아래로 스크롤해도 패널이 상단에 유지되므로 <strong>저장 및 성적표 생성</strong> 버튼을 바로 눌러 Google Sheets 저장과 학생 링크 복사를 완료할 수 있습니다.</p></section>
+<main class="guide"><section class="guide-section"><h2>6회 수정 해설 반영</h2><p>2026년 8월 9일 수정 해설을 기준으로 6회 9번 정답은 <strong>④</strong>로 수정되었고, 11번 선택지는 토크 단위에 맞는 <strong>10, 5, 2, 25, 50 N·m</strong>로 교체되었습니다. 기존 6회 학생 링크도 다시 열면 현재 정답표로 자동 재채점됩니다. Apps Script를 교체한 뒤 <code>checkRound6Revision</code>을 실행하면 반영 상태를 확인할 수 있습니다.</p></section><section class="guide-section"><h2>학생 링크가 다른 학생으로 열릴 때</h2><p>v3.5.0부터 학생 기록의 로컬 ID와 Google Sheets 토큰을 분리하고, 링크를 열기 전에 시험·학교·학생 이름의 식별 지문을 검증합니다. 업데이트 후 학생 기록에서 <strong>서버 기록 새로고침</strong>을 누르고, Apps Script에서 <code>initializeReportIntegrity</code>를 한 번 실행하세요. 이전에 잘못 복사된 링크는 해당 학생 행의 <strong>링크 복사</strong> 버튼으로 새로 발급해야 합니다.</p></section><section class="step"><h2>상단 빠른 저장 패널</h2><p>학생 이름과 답안을 입력하면 입력 카드 상단에 현재 점수와 정답·오답·미기입 수가 즉시 표시됩니다. 답안 구간을 아래로 스크롤해도 패널이 상단에 유지되므로 <strong>저장 및 성적표 생성</strong> 버튼을 바로 눌러 Google Sheets 저장과 학생 링크 복사를 완료할 수 있습니다.</p></section>
   <p class="eyebrow" style="color:var(--brand-2);margin-top:34px">QUICK GUIDE</p>
   <h1>학생별 성적표 링크 만들기</h1>
   <p>학교(선택), 학생 이름, 1~20번 답안을 입력한 뒤 <strong>학생별 성적표 링크 생성</strong>을 누릅니다.</p>
@@ -52,6 +52,7 @@
   <h2>이전 회차 분석</h2>
   <p>같은 학교·이름으로 저장된 기록은 <strong>입력한 순서가 아니라 회차 번호 순서</strong>로 연결됩니다. 예를 들어 5회 결과를 먼저 입력하고 4회 결과를 나중에 입력해도, 기존 5회 서버 링크를 다시 열거나 상단의 <strong>최신 분석</strong>을 누르면 4회가 이전 회차 분석에 포함됩니다. 반대로 4회 리포트에는 미래 회차인 5회가 표시되지 않습니다. 예전 <code>#report=...</code> 링크에 서버 토큰이 남아 있으면 열 때 자동으로 최신 서버 링크로 전환됩니다. 현재 패키지에는 1회~10회 시험·해설이 등록되어 있습니다.</p>
 
+  <div class="notice notice--info"><strong>동명이인 자동 구분</strong><br>같은 시험·같은 학교에서 같은 이름을 새 학생으로 두 번째 저장하면 첫 학생은 <code>홍길동</code>, 두 번째는 <code>홍길동2</code>, 세 번째는 <code>홍길동3</code>처럼 자동 저장됩니다. 기존 학생의 답안을 고칠 때에는 새로 입력하지 말고 학생 기록 목록의 <strong>수정</strong> 버튼을 사용하세요. 다음 회차에서도 같은 동명이인을 누적 연결하려면 최종 저장 이름(<code>홍길동2</code> 등)을 그대로 입력해야 합니다.</div>
   <div class="notice"><strong>개인정보와 링크 보안</strong><br>성적표 링크는 계정 로그인 문서가 아니라 링크 소지자가 볼 수 있는 방식입니다. 공개 게시판에 링크를 올리지 마세요. 이 공개 배포용 버전은 <code>assets/seed-records.js</code>를 빈 데이터로 구성하여 실제 학생 이름과 답안을 포함하지 않습니다. 실제 성적은 교사용 화면에서 입력하거나 Google Sheets 모드로 저장하세요. Google Sheets 저장 키는 코드나 저장소에 넣지 마세요. 키는 교사 기기 브라우저에 저장되므로 공용 컴퓨터에서는 작업 후 반드시 지우세요. 동명이인이 있을 수 있다면 이름에 반·번호 또는 내부 식별 문자를 함께 입력하세요.</div>
 
   <h2>시험 자료 해설 메모</h2>

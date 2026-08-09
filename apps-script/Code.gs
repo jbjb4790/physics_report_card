@@ -4,20 +4,23 @@
  *
  * Script Properties
  * - WRITE_KEY (required): teacher write password
- * - SPREADSHEET_ID (optional): required only for a standalone script
+ * - SPREADSHEET_ID (recommended): 현재 저장 대상 Google Sheet ID
  *
  * Optional private companion file
  * - LegacySeed.gs: defines LEGACY_SEED_VERSION and LEGACY_SEED_RECORDS.
  *   Keep it in Apps Script only; never upload student data to GitHub.
  */
 
-var SERVER_VERSION = '3.3.0';
+var SERVER_VERSION = '3.6.0';
 var SHEET_NAME = 'Reports';
 var HEADERS = ['Token','CreatedAt','UpdatedAt','ExamId','Round','StudentKey','School','Name','AnswersJSON','RecordJSON'];
 
+// 기본 저장 대상. 스크립트 속성 SPREADSHEET_ID가 있으면 그 값을 우선 사용합니다.
+var DEFAULT_SPREADSHEET_ID = '1RydC5kkQyVaZezX8ZwMP37gE1hdbKV3hMGlcuNVTVVg';
+
 var LEGACY_SEED_PROPERTY = 'LEGACY_SEED_IMPORTED_VERSION';
 var REPORT_INTEGRITY_PROPERTY = 'REPORT_INTEGRITY_REPAIR_VERSION';
-var REPORT_INTEGRITY_VERSION = '3.3.0';
+var REPORT_INTEGRITY_VERSION = '3.5.0';
 
 function legacySeedAvailable_() {
   return typeof LEGACY_SEED_VERSION !== 'undefined' &&
@@ -39,8 +42,307 @@ function legacySeedStatus_() {
 }
 
 function initializeLegacyRecords() {
+  var location = storageLocation_();
   var result = importLegacyRecords_(true);
-  return '기존 1~5회 학생 데이터 초기화 완료: 추가 ' + result.inserted + '명, 기존 유지 ' + result.skipped + '명, Reports 전체 ' + result.total + '명';
+  SpreadsheetApp.flush();
+  var message =
+    '기존 1~5회 학생 데이터 초기화 완료: 추가 ' + result.inserted +
+    '명, 기존 유지 ' + result.skipped +
+    '명, Reports 전체 ' + result.total +
+    '명 / 저장 위치: ' + location.spreadsheetName +
+    ' / ' + location.spreadsheetUrl;
+  console.log(message);
+  return message;
+}
+
+/**
+ * 현재 Apps Script가 실제로 어느 스프레드시트에 연결되어 있는지 확인합니다.
+ * 실행 로그와 반환값에 스프레드시트 URL, Reports 시트 존재 여부, 학생 수를 표시합니다.
+ */
+function checkStorageLocation() {
+  var result = storageLocation_();
+  console.log(JSON.stringify(result, null, 2));
+  return JSON.stringify(result, null, 2);
+}
+
+/**
+ * 2026-08-09 수정된 6회 해설의 반영 상태를 확인합니다.
+ * 9번 정답은 ④, 11번 정답은 ①이어야 합니다.
+ * 기존 학생 기록은 답안 원문을 기준으로 성적표를 열 때마다 자동 재채점됩니다.
+ */
+function checkRound6Revision() {
+  var exam = getExam_('tpl-mid-06');
+  var records = readAll_().filter(function (item) {
+    return item.record && item.record.examId === 'tpl-mid-06';
+  });
+  var result = {
+    ok: Number(exam.answerKey[8]) === 4 && Number(exam.answerKey[10]) === 1,
+    serverVersion: SERVER_VERSION,
+    examId: exam.id,
+    question9Answer: exam.answerKey[8],
+    question11Answer: exam.answerKey[10],
+    round6StudentCount: records.length,
+    note: '기존 6회 학생 성적은 저장된 답안을 현재 정답표로 동적 재채점합니다.'
+  };
+  console.log(JSON.stringify(result, null, 2));
+  return JSON.stringify(result, null, 2);
+}
+
+/**
+ * 이 프로젝트의 기본 스프레드시트 ID를 스크립트 속성에 저장하고,
+ * Reports 시트를 만든 뒤 기존 1~5회 학생 데이터를 한 번에 가져옵니다.
+ *
+ * Google Sheet가 비어 있을 때 가장 먼저 이 함수를 실행하세요.
+ */
+function setupStorageAndImportLegacyRecords() {
+  var props = PropertiesService.getScriptProperties();
+  var configuredId = String(props.getProperty('SPREADSHEET_ID') || '').trim();
+
+  // 기존 설정값을 임의로 DEFAULT_SPREADSHEET_ID로 덮어쓰지 않습니다.
+  // 스크립트 속성이 비어 있을 때만 현재 바인딩된 스프레드시트를 우선 사용합니다.
+  if (!configuredId) {
+    var active = SpreadsheetApp.getActiveSpreadsheet();
+    if (active) {
+      props.setProperty('SPREADSHEET_ID', active.getId());
+    } else if (DEFAULT_SPREADSHEET_ID) {
+      props.setProperty('SPREADSHEET_ID', DEFAULT_SPREADSHEET_ID);
+    }
+  }
+
+  props.deleteProperty(LEGACY_SEED_PROPERTY);
+  props.deleteProperty(REPORT_INTEGRITY_PROPERTY);
+
+  var preparedMessage = initializeSheet();
+  var imported = importLegacyRecords_(true);
+  SpreadsheetApp.flush();
+
+  var integrity = repairReportIntegrity_(true);
+  SpreadsheetApp.flush();
+
+  var counts = {};
+  readAll_().forEach(function (item) {
+    var examId = item.record.examId;
+    counts[examId] = (counts[examId] || 0) + 1;
+  });
+
+  var location = storageLocation_();
+  var result = {
+    ok: true,
+    serverVersion: SERVER_VERSION,
+    prepared: preparedMessage,
+    spreadsheetId: location.actualSpreadsheetId,
+    spreadsheetName: location.spreadsheetName,
+    spreadsheetUrl: location.spreadsheetUrl,
+    reportsSheetExists: location.reportsSheetExists,
+    reportsStudentCount: location.reportsStudentCount,
+    legacySeedAvailable: location.legacySeed.available,
+    legacySeedExpected: location.legacySeed.expected,
+    inserted: imported.inserted,
+    skipped: imported.skipped,
+    integrity: integrity,
+    byExam: counts
+  };
+
+  console.log(JSON.stringify(result, null, 2));
+  return JSON.stringify(result, null, 2);
+}
+
+/**
+ * 스크립트 속성의 SPREADSHEET_ID를 이 프로젝트의 기본 ID로 다시 맞춥니다.
+ * 학생 데이터는 삭제하지 않습니다.
+ */
+function resetSpreadsheetIdToDefault() {
+  PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', DEFAULT_SPREADSHEET_ID);
+  var result = storageLocation_();
+  console.log(JSON.stringify(result, null, 2));
+  return JSON.stringify(result, null, 2);
+}
+
+
+/**
+ * 이 Apps Script를 열어 둔 현재 Google Sheet를 저장 대상으로 연결합니다.
+ * 반드시 대상 스프레드시트에서 '확장 프로그램 → Apps Script'로 연 프로젝트에서 실행하세요.
+ */
+function connectThisSpreadsheet() {
+  var active = SpreadsheetApp.getActiveSpreadsheet();
+  if (!active) {
+    throw apiError_(
+      'ACTIVE_SHEET_NOT_FOUND',
+      '현재 바인딩된 스프레드시트를 찾지 못했습니다. 저장하려는 Google Sheet에서 확장 프로그램 → Apps Script로 열어 실행해 주세요.'
+    );
+  }
+
+  PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', active.getId());
+  var sheet = active.getSheetByName(SHEET_NAME);
+  if (!sheet) {
+    sheet = active.insertSheet(SHEET_NAME);
+    sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, HEADERS.length)
+      .setFontWeight('bold')
+      .setBackground('#dce8f5');
+  }
+
+  SpreadsheetApp.flush();
+  var result = storageLocation_();
+  console.log(JSON.stringify(result, null, 2));
+  return JSON.stringify(result, null, 2);
+}
+
+/**
+ * 현재 Google Sheet를 저장 대상으로 연결한 뒤 기존 1~5회 학생 데이터를 가져옵니다.
+ * 대상 Sheet가 비어 있고 기존 기본 학생 자료를 처음 넣을 때 사용하세요.
+ */
+function connectThisSpreadsheetAndImportLegacyRecords() {
+  connectThisSpreadsheet();
+  var props = PropertiesService.getScriptProperties();
+  props.deleteProperty(LEGACY_SEED_PROPERTY);
+  props.deleteProperty(REPORT_INTEGRITY_PROPERTY);
+  return setupStorageAndImportLegacyRecords();
+}
+
+/**
+ * 현재까지 다른 Google Sheet에 저장된 Reports 데이터를
+ * 지금 열어 둔 Google Sheet로 그대로 복사하고 저장 대상을 전환합니다.
+ *
+ * 안전을 위해 대상 Reports 시트에 학생 행이 이미 있으면 중단합니다.
+ * 기존 학생 링크가 계속 작동하도록 Token과 RecordJSON을 그대로 보존합니다.
+ */
+function migrateCurrentReportsToThisSpreadsheet() {
+  var target = SpreadsheetApp.getActiveSpreadsheet();
+  if (!target) {
+    throw apiError_(
+      'ACTIVE_SHEET_NOT_FOUND',
+      '이전할 대상 Google Sheet에서 확장 프로그램 → Apps Script로 연 뒤 실행해 주세요.'
+    );
+  }
+
+  var props = PropertiesService.getScriptProperties();
+  var configuredId = String(props.getProperty('SPREADSHEET_ID') || '').trim();
+  var sourceId = configuredId || DEFAULT_SPREADSHEET_ID;
+
+  if (!sourceId) {
+    throw apiError_('SOURCE_SHEET_NOT_FOUND', '현재 저장 중인 원본 SPREADSHEET_ID를 찾지 못했습니다.');
+  }
+
+  if (sourceId === target.getId()) {
+    var sameResult = storageLocation_();
+    sameResult.migrated = false;
+    sameResult.message = '현재 저장 대상과 이 Google Sheet가 이미 같습니다.';
+    console.log(JSON.stringify(sameResult, null, 2));
+    return JSON.stringify(sameResult, null, 2);
+  }
+
+  var source;
+  try {
+    source = SpreadsheetApp.openById(sourceId);
+  } catch (error) {
+    throw apiError_(
+      'SOURCE_SHEET_OPEN_FAILED',
+      '기존 저장 스프레드시트를 열지 못했습니다. 원본 ID=' + sourceId + ' / 원인: ' + error.message
+    );
+  }
+
+  var sourceSheet = source.getSheetByName(SHEET_NAME);
+  if (!sourceSheet) {
+    throw apiError_(
+      'SOURCE_REPORTS_NOT_FOUND',
+      '기존 저장 스프레드시트에 Reports 시트가 없습니다: ' + source.getUrl()
+    );
+  }
+
+  var sourceLastRow = sourceSheet.getLastRow();
+  if (sourceLastRow < 2) {
+    throw apiError_(
+      'SOURCE_REPORTS_EMPTY',
+      '기존 저장 스프레드시트의 Reports 시트에 학생 데이터가 없습니다: ' + source.getUrl()
+    );
+  }
+
+  var sourceHeader = sourceSheet
+    .getRange(1, 1, 1, HEADERS.length)
+    .getDisplayValues()[0];
+
+  if (sourceHeader.join('|') !== HEADERS.join('|')) {
+    throw apiError_(
+      'SOURCE_HEADER_MISMATCH',
+      '기존 Reports 시트의 열 구성이 예상 형식과 다릅니다.'
+    );
+  }
+
+  var targetSheet = target.getSheetByName(SHEET_NAME);
+  if (!targetSheet) {
+    targetSheet = target.insertSheet(SHEET_NAME);
+  }
+
+  if (targetSheet.getLastRow() > 1) {
+    throw apiError_(
+      'TARGET_REPORTS_NOT_EMPTY',
+      '이전 대상 Reports 시트에 이미 학생 데이터가 있습니다. 중복 방지를 위해 자동 이전을 중단했습니다.'
+    );
+  }
+
+  // 대상 시트에 헤더와 원본 데이터를 그대로 복사합니다.
+  var sourceValues = sourceSheet
+    .getRange(1, 1, sourceLastRow, HEADERS.length)
+    .getValues();
+
+  targetSheet.clearContents();
+  targetSheet
+    .getRange(1, 1, sourceValues.length, HEADERS.length)
+    .setValues(sourceValues);
+  targetSheet.setFrozenRows(1);
+  targetSheet
+    .getRange(1, 1, 1, HEADERS.length)
+    .setFontWeight('bold')
+    .setBackground('#dce8f5');
+
+  props.setProperty('SPREADSHEET_ID', target.getId());
+  SpreadsheetApp.flush();
+
+  var result = storageLocation_();
+  result.migrated = true;
+  result.sourceSpreadsheetId = source.getId();
+  result.sourceSpreadsheetName = source.getName();
+  result.sourceSpreadsheetUrl = source.getUrl();
+  result.targetSpreadsheetId = target.getId();
+  result.targetSpreadsheetName = target.getName();
+  result.targetSpreadsheetUrl = target.getUrl();
+  result.copiedStudentCount = sourceLastRow - 1;
+
+  console.log(JSON.stringify(result, null, 2));
+  return JSON.stringify(result, null, 2);
+}
+
+function storageLocation_() {
+  var props = PropertiesService.getScriptProperties();
+  var configuredId = String(props.getProperty('SPREADSHEET_ID') || '').trim();
+  var effectiveId = configuredId || DEFAULT_SPREADSHEET_ID;
+  var spreadsheet;
+
+  try {
+    spreadsheet = SpreadsheetApp.openById(effectiveId);
+  } catch (error) {
+    throw apiError_(
+      'SHEET_OPEN_FAILED',
+      '스프레드시트를 열지 못했습니다. SPREADSHEET_ID=' + effectiveId +
+      ' / 원인: ' + error.message
+    );
+  }
+
+  var reports = spreadsheet.getSheetByName(SHEET_NAME);
+  return {
+    serverVersion: SERVER_VERSION,
+    configuredSpreadsheetId: configuredId || '미설정(기본값 사용)',
+    defaultSpreadsheetId: DEFAULT_SPREADSHEET_ID,
+    actualSpreadsheetId: spreadsheet.getId(),
+    spreadsheetName: spreadsheet.getName(),
+    spreadsheetUrl: spreadsheet.getUrl(),
+    reportsSheetExists: Boolean(reports),
+    reportsStudentCount: reports ? Math.max(0, reports.getLastRow() - 1) : 0,
+    reportsLastRow: reports ? reports.getLastRow() : 0,
+    legacySeed: legacySeedStatus_()
+  };
 }
 
 
@@ -69,7 +371,13 @@ function resetLegacyImportFlag() {
 function initializeReportIntegrity() {
   ensureLegacyRecords_();
   var result = repairReportIntegrity_(true);
-  return '학생 링크 무결성 복구 완료: 기존 ' + result.before + '행, 정리 후 ' + result.after + '행, 중복 학생행 제거 ' + result.duplicateStudentRowsRemoved + '개, 중복·잘못된 토큰 재발급 ' + result.tokensReissued + '개';
+  return '학생 링크 무결성 복구 완료: 기존 ' + result.before + '행, 정리 후 ' + result.after + '행, 동명이인 이름 번호 부여 ' + result.duplicateStudentRowsRenamed + '개, 중복·잘못된 토큰 재발급 ' + result.tokensReissued + '개';
+}
+
+function renumberDuplicateStudentNames() {
+  ensureLegacyRecords_();
+  var result = repairReportIntegrity_(true);
+  return '동명이인 이름 정리 완료: ' + result.duplicateStudentRowsRenamed + '개 기록에 이름2, 이름3 ... 형식으로 번호를 부여했습니다. 백업 시트: ' + (result.backupSheet || '생성 안 됨');
 }
 
 function checkReportIntegrity() {
@@ -119,7 +427,11 @@ function parseIntegrityRows_(sheet) {
           answers: answers,
           createdAt: createdAt,
           updatedAt: updatedAt,
-          source: rawRecord.source || ''
+          source: rawRecord.source || '',
+          requestedName: rawRecord.requestedName || '',
+          duplicateNameIndex: Number(rawRecord.duplicateNameIndex || studentNameParts_(name).index || 1),
+          nameAliases: Array.isArray(rawRecord.nameAliases) ? rawRecord.nameAliases.slice() : [],
+          identityFingerprintAliases: identityAliases_(rawRecord)
         }
       });
     } catch (error) {
@@ -129,6 +441,7 @@ function parseIntegrityRows_(sheet) {
   });
   return { records: records, malformed: malformed };
 }
+
 
 function inspectReportIntegrity_() {
   var parsed = parseIntegrityRows_(sheet_());
@@ -158,7 +471,8 @@ function inspectReportIntegrity_() {
 function repairReportIntegrity_(force) {
   var props = PropertiesService.getScriptProperties();
   if (!force && props.getProperty(REPORT_INTEGRITY_PROPERTY) === REPORT_INTEGRITY_VERSION) {
-    return { repaired: false, version: REPORT_INTEGRITY_VERSION, before: readAll_().length, after: readAll_().length, duplicateStudentRowsRemoved: 0, tokensReissued: 0, malformedRowsRemoved: 0 };
+    var currentCount = readAll_().length;
+    return { repaired: false, version: REPORT_INTEGRITY_VERSION, before: currentCount, after: currentCount, duplicateStudentRowsRemoved: 0, duplicateStudentRowsRenamed: 0, tokensReissued: 0, malformedRowsRemoved: 0 };
   }
 
   var lock = LockService.getScriptLock();
@@ -166,18 +480,12 @@ function repairReportIntegrity_(force) {
   try {
     var sheet = sheet_();
     var parsed = parseIntegrityRows_(sheet);
-    var latest = {};
-    parsed.records.forEach(function (item) {
-      var previous = latest[item.identity];
-      var itemTime = Date.parse(item.record.updatedAt || item.record.createdAt) || 0;
-      var previousTime = previous ? (Date.parse(previous.record.updatedAt || previous.record.createdAt) || 0) : -1;
-      if (!previous || itemTime > previousTime || (itemTime === previousTime && item.originalRow > previous.originalRow)) latest[item.identity] = item;
-    });
-
-    var retained = Object.keys(latest).map(function (identity) { return latest[identity]; })
-      .sort(function (a, b) { return a.originalRow - b.originalRow; });
+    var retained = parsed.records.slice().sort(function (a, b) { return a.originalRow - b.originalRow; });
     var usedTokens = {};
     var tokensReissued = 0;
+    var duplicateStudentRowsRenamed = 0;
+    var assignedItems = [];
+
     var rows = retained.map(function (item) {
       var token = item.token;
       if (!/^[A-Fa-f0-9]{24,64}$/.test(token) || usedTokens[token]) {
@@ -185,13 +493,23 @@ function repairReportIntegrity_(force) {
         tokensReissued += 1;
       }
       usedTokens[token] = true;
+
       var record = item.record;
+      var oldName = normalizeText_(record.name);
+      var assignedName = nextAvailableStudentName_(assignedItems, record.examId, record.school, oldName, '');
+      if (assignedName !== oldName) {
+        addIdentityAlias_(record, record.examId, record.school, oldName);
+        duplicateStudentRowsRenamed += 1;
+      }
+
       record.id = token;
       record.serverId = token;
       record.school = normalizeSchool_(record.school);
-      record.name = normalizeText_(record.name);
+      record.name = assignedName;
       record.answers = normalizeAnswers_(record.answers, item.exam.answerCount);
+      record.duplicateNameIndex = studentNameParts_(assignedName).index;
       var key = studentKey_(record);
+      assignedItems.push({ token: token, record: record, row: item.originalRow });
       return [
         token,
         record.createdAt,
@@ -221,13 +539,15 @@ function repairReportIntegrity_(force) {
     var lastRow = sheet.getLastRow();
     if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, HEADERS.length).clearContent();
     if (rows.length) sheet.getRange(2, 1, rows.length, HEADERS.length).setValues(rows);
+    SpreadsheetApp.flush();
     props.setProperty(REPORT_INTEGRITY_PROPERTY, REPORT_INTEGRITY_VERSION);
     return {
       repaired: true,
       version: REPORT_INTEGRITY_VERSION,
       before: parsed.records.length,
       after: rows.length,
-      duplicateStudentRowsRemoved: parsed.records.length - retained.length,
+      duplicateStudentRowsRemoved: 0,
+      duplicateStudentRowsRenamed: duplicateStudentRowsRenamed,
       tokensReissued: tokensReissued,
       malformedRowsRemoved: parsed.malformed,
       backupSheet: backupName
@@ -236,6 +556,7 @@ function repairReportIntegrity_(force) {
     lock.releaseLock();
   }
 }
+
 
 function ensureLegacyRecords_() {
   if (!legacySeedAvailable_()) return { available: false, inserted: 0, skipped: 0, total: readAll_().length };
@@ -260,13 +581,11 @@ function importLegacyRecords_(force) {
   try {
     var sheet = sheet_();
     var existing = readAll_(sheet);
-    var byExact = {};
-    var byExamName = {};
+    var allItems = existing.slice();
+    var byContent = {};
     existing.forEach(function (item) {
       var record = item.record;
-      byExact[record.examId + '|' + studentKey_(record)] = true;
-      var nameKey = record.examId + '|' + normalizeText_(record.name).replace(/\s+/g, '').toLowerCase();
-      byExamName[nameKey] = true;
+      byContent[seedContentKey_(record.examId, record.school, record.name, record.answers)] = true;
     });
 
     var rows = [];
@@ -275,20 +594,16 @@ function importLegacyRecords_(force) {
     LEGACY_SEED_RECORDS.forEach(function (input) {
       var exam = getExam_(input.examId);
       var school = normalizeSchool_(input.school);
-      var name = normalizeText_(input.name);
-      if (!name) return;
+      var requestedName = normalizeText_(input.name);
+      if (!requestedName) return;
       var answers = normalizeAnswers_(input.answers, exam.answerCount);
-      var key = studentKey_({ school: school, name: name });
-      var exactKey = exam.id + '|' + key;
-      var nameKey = exam.id + '|' + name.replace(/\s+/g, '').toLowerCase();
-
-      // The source Excel files did not include school names. If the same student
-      // was already saved later with a school name, preserve the newer server row.
-      if (byExact[exactKey] || byExamName[nameKey]) {
+      var contentKey = seedContentKey_(exam.id, school, requestedName, answers);
+      if (byContent[contentKey]) {
         skipped += 1;
         return;
       }
 
+      var assignedName = nextAvailableStudentName_(allItems, exam.id, school, requestedName, '');
       var token = Utilities.getUuid().replace(/-/g, '');
       var createdAt = input.createdAt || now;
       var record = {
@@ -297,25 +612,30 @@ function importLegacyRecords_(force) {
         examId: exam.id,
         round: exam.round,
         school: school,
-        name: name,
+        name: assignedName,
+        requestedName: requestedName,
+        duplicateNameIndex: studentNameParts_(assignedName).index,
         answers: answers,
         createdAt: createdAt,
         updatedAt: createdAt,
         source: 'legacy-excel-seed'
       };
+      var key = studentKey_(record);
       rows.push([
-        token, createdAt, createdAt, exam.id, exam.round, key, school, name,
+        token, createdAt, createdAt, exam.id, exam.round, key, school, assignedName,
         JSON.stringify(answers), JSON.stringify(record)
       ]);
-      byExact[exactKey] = true;
-      byExamName[nameKey] = true;
+      allItems.push({ token: token, record: record, row: sheet.getLastRow() + rows.length });
+      byContent[contentKey] = true;
     });
 
     if (rows.length) {
       var startRow = sheet.getLastRow() + 1;
       sheet.getRange(startRow, 1, rows.length, HEADERS.length).setValues(rows);
+      SpreadsheetApp.flush();
     }
     props.setProperty(LEGACY_SEED_PROPERTY, version);
+    props.deleteProperty(REPORT_INTEGRITY_PROPERTY);
     return {
       available: true,
       imported: true,
@@ -328,6 +648,7 @@ function importLegacyRecords_(force) {
     lock.releaseLock();
   }
 }
+
 
 var EXAMS = {
   'tpl-mid-01': {
@@ -412,7 +733,7 @@ var EXAMS = {
     correctScore: 5,
     wrongScore: -1.25,
     blankScore: 0,
-    answerKey: [4,1,3,5,5,1,2,5,5,5,1,1,4,3,4,5,2,4,3,2],
+    answerKey: [4,1,3,5,5,1,2,5,4,5,1,1,4,3,4,5,2,4,3,2],
     domains: ['역학','역학','역학','역학','역학','역학','전기·자기','전기·자기','역학','역학','역학','파동·광학','전기·자기','파동·광학','역학','역학','역학','파동·광학','전기·자기','파동·광학'],
     units: ['연결 물체의 가속도와 에너지','속력-시간 그래프의 정성적 해석','마찰력과 일-에너지 정리','마찰과 용수철 에너지','에너지 비례와 완전비탄성 충돌','돌림힘의 평형','직선 도선 자기장의 중첩','전구 밝기와 가변저항 회로','등가속도 운동 자료 분석','상대 속도와 강물 속 보트','지레와 돌림힘','빛의 분산과 무지개','초전도체의 성질','광전효과와 빛의 양자성','곡면 마찰과 충격량','두 줄에 매달린 물체의 힘 평형','부력과 뜨고 가라앉기','굴절과 겉보기 깊이','유전체의 정전기 유도','빛의 합성과 물체의 색']
   },
@@ -545,10 +866,27 @@ function assertWriteKey_(provided) {
 }
 
 function spreadsheet_() {
-  var id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
-  var spreadsheet = id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
-  if (!spreadsheet) throw apiError_('SHEET_NOT_FOUND', '연결된 스프레드시트를 찾지 못했습니다. SPREADSHEET_ID를 설정해 주세요.');
-  return spreadsheet;
+  var configuredId = String(
+    PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID') || ''
+  ).trim();
+  var id = configuredId || DEFAULT_SPREADSHEET_ID;
+
+  if (!id) {
+    throw apiError_(
+      'SHEET_NOT_FOUND',
+      'SPREADSHEET_ID가 설정되어 있지 않습니다.'
+    );
+  }
+
+  try {
+    return SpreadsheetApp.openById(id);
+  } catch (error) {
+    throw apiError_(
+      'SHEET_OPEN_FAILED',
+      '지정한 스프레드시트를 열지 못했습니다. SPREADSHEET_ID=' + id +
+      ' / 원인: ' + error.message
+    );
+  }
 }
 
 function sheet_() {
@@ -585,47 +923,86 @@ function saveReport_(payloadText) {
 
   var exam = getExam_(input.examId);
   var school = normalizeSchool_(input.school);
-  var name = normalizeText_(input.name);
-  if (!name) throw apiError_('NAME_REQUIRED', '학생 이름을 입력해 주세요.');
+  var requestedName = normalizeText_(input.name);
+  if (!requestedName) throw apiError_('NAME_REQUIRED', '학생 이름을 입력해 주세요.');
   var answers = normalizeAnswers_(input.answers, exam.answerCount);
-  var key = studentKey_({ school: school, name: name });
-  var expectedFingerprint = identityFingerprint_({ examId: exam.id, school: school, name: name });
-  if (input.identityFingerprint && String(input.identityFingerprint).toLowerCase() !== expectedFingerprint) {
+  var requestedFingerprint = identityFingerprint_({ examId: exam.id, school: school, name: requestedName });
+  if (input.identityFingerprint && String(input.identityFingerprint).toLowerCase() !== requestedFingerprint) {
     throw apiError_('IDENTITY_FINGERPRINT_MISMATCH', '학생 이름·학교·시험 식별값이 요청과 일치하지 않습니다.');
   }
-  var now = new Date().toISOString();
 
+  var intent = normalizeSaveIntent_(input.saveIntent);
+  var explicitToken = extractServerToken_(input);
+  var now = new Date().toISOString();
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   var token;
   var record;
+  var assignedName;
+  var nameAdjusted = false;
   try {
     var sheet = sheet_();
-    var found = findByStudentExam_(sheet, key, exam.id);
-    token = found ? found.token : Utilities.getUuid().replace(/-/g, '');
+    var items = readAll_(sheet);
+    var found = explicitToken ? findItemByTokenInItems_(items, explicitToken) : null;
+
+    if (intent === 'update' && explicitToken && !found) {
+      throw apiError_('EDIT_TARGET_NOT_FOUND', '수정할 학생 기록을 찾지 못했습니다. 학생 기록을 새로고침한 뒤 다시 시도해 주세요.');
+    }
+    if (!found && intent !== 'create') {
+      found = findItemByExactIdentity_(items, exam.id, school, requestedName);
+    }
+
+    if (found) {
+      assignedName = nextAvailableStudentName_(items, exam.id, school, requestedName, found.token);
+      token = found.token;
+    } else {
+      assignedName = intent === 'create'
+        ? nextAvailableStudentName_(items, exam.id, school, requestedName, '')
+        : requestedName;
+      token = Utilities.getUuid().replace(/-/g, '');
+    }
+    nameAdjusted = assignedName !== requestedName;
+
     var createdAt = found ? found.record.createdAt : (input.createdAt || now);
-    record = {
-      id: token,
-      serverId: token,
-      examId: exam.id,
-      round: exam.round,
-      school: school,
-      name: name,
-      answers: answers,
-      createdAt: createdAt,
-      updatedAt: now
-    };
+    record = found ? Object.assign({}, found.record) : {};
+    if (found && normalizeText_(found.record.name) !== assignedName) {
+      addIdentityAlias_(record, exam.id, found.record.school, found.record.name);
+    }
+    record.id = token;
+    record.serverId = token;
+    record.examId = exam.id;
+    record.round = exam.round;
+    record.school = school;
+    record.name = assignedName;
+    record.answers = answers;
+    record.createdAt = createdAt;
+    record.updatedAt = now;
+    record.requestedName = requestedName;
+    record.duplicateNameIndex = studentNameParts_(assignedName).index;
+
+    var key = studentKey_(record);
     var row = [
-      token, createdAt, now, exam.id, exam.round, key, school, name,
+      token, createdAt, now, exam.id, exam.round, key, school, assignedName,
       JSON.stringify(answers), JSON.stringify(record)
     ];
     if (found) sheet.getRange(found.row, 1, 1, HEADERS.length).setValues([row]);
     else sheet.appendRow(row);
+    SpreadsheetApp.flush();
   } finally {
     lock.releaseLock();
   }
 
-  return { ok: true, token: token, id: token, serverVersion: SERVER_VERSION, report: buildSnapshot_(record) };
+  return {
+    ok: true,
+    token: token,
+    id: token,
+    serverVersion: SERVER_VERSION,
+    requestedName: requestedName,
+    assignedName: assignedName,
+    nameAdjusted: nameAdjusted,
+    duplicateNameIndex: studentNameParts_(assignedName).index,
+    report: buildSnapshot_(record)
+  };
 }
 
 
@@ -648,69 +1025,96 @@ function saveReportsBatch_(payloadText) {
   try {
     var sheet = sheet_();
     var items = readAll_(sheet);
-    var byStudentExam = {};
-    items.forEach(function (item) {
-      byStudentExam[item.record.examId + '|' + studentKey_(item.record)] = item;
-    });
 
     inputs.forEach(function (input) {
       var exam = getExam_(input.examId);
       var school = normalizeSchool_(input.school);
-      var name = normalizeText_(input.name);
-      if (!name) throw apiError_('NAME_REQUIRED', '학생 이름을 입력해 주세요.');
+      var requestedName = normalizeText_(input.name);
+      if (!requestedName) throw apiError_('NAME_REQUIRED', '학생 이름을 입력해 주세요.');
       var answers = normalizeAnswers_(input.answers, exam.answerCount);
-      var key = studentKey_({ school: school, name: name });
-      var expectedFingerprint = identityFingerprint_({ examId: exam.id, school: school, name: name });
-      if (input.identityFingerprint && String(input.identityFingerprint).toLowerCase() !== expectedFingerprint) {
-        throw apiError_('IDENTITY_FINGERPRINT_MISMATCH', name + ' 학생의 이름·학교·시험 식별값이 요청과 일치하지 않습니다.');
+      var requestedFingerprint = identityFingerprint_({ examId: exam.id, school: school, name: requestedName });
+      if (input.identityFingerprint && String(input.identityFingerprint).toLowerCase() !== requestedFingerprint) {
+        throw apiError_('IDENTITY_FINGERPRINT_MISMATCH', requestedName + ' 학생의 이름·학교·시험 식별값이 요청과 일치하지 않습니다.');
       }
-      var mapKey = exam.id + '|' + key;
-      var found = byStudentExam[mapKey] || null;
+
+      var intent = normalizeSaveIntent_(input.saveIntent);
+      var explicitToken = extractServerToken_(input);
+      var found = explicitToken ? findItemByTokenInItems_(items, explicitToken) : null;
+      if (intent === 'update' && explicitToken && !found) {
+        throw apiError_('EDIT_TARGET_NOT_FOUND', requestedName + ' 학생의 수정 대상 기록을 찾지 못했습니다.');
+      }
+      if (!found && intent !== 'create') {
+        found = findItemByExactIdentity_(items, exam.id, school, requestedName);
+      }
+
+      var assignedName;
+      var token;
+      if (found) {
+        assignedName = nextAvailableStudentName_(items, exam.id, school, requestedName, found.token);
+        token = found.token;
+      } else {
+        assignedName = intent === 'create'
+          ? nextAvailableStudentName_(items, exam.id, school, requestedName, '')
+          : requestedName;
+        token = Utilities.getUuid().replace(/-/g, '');
+      }
+
       var now = new Date().toISOString();
-      var token = found ? found.token : Utilities.getUuid().replace(/-/g, '');
       var createdAt = found ? found.record.createdAt : (input.createdAt || now);
-      var record = {
-        id: token,
-        serverId: token,
-        examId: exam.id,
-        round: exam.round,
-        school: school,
-        name: name,
-        answers: answers,
-        createdAt: createdAt,
-        updatedAt: now
-      };
+      var record = found ? Object.assign({}, found.record) : {};
+      if (found && normalizeText_(found.record.name) !== assignedName) {
+        addIdentityAlias_(record, exam.id, found.record.school, found.record.name);
+      }
+      record.id = token;
+      record.serverId = token;
+      record.examId = exam.id;
+      record.round = exam.round;
+      record.school = school;
+      record.name = assignedName;
+      record.answers = answers;
+      record.createdAt = createdAt;
+      record.updatedAt = now;
+      record.requestedName = requestedName;
+      record.duplicateNameIndex = studentNameParts_(assignedName).index;
+
+      var key = studentKey_(record);
       var row = [
-        token, createdAt, now, exam.id, exam.round, key, school, name,
+        token, createdAt, now, exam.id, exam.round, key, school, assignedName,
         JSON.stringify(answers), JSON.stringify(record)
       ];
 
       if (found) {
         sheet.getRange(found.row, 1, 1, HEADERS.length).setValues([row]);
-        found.token = token;
         found.record = record;
+        found.token = token;
       } else {
         sheet.appendRow(row);
         found = { token: token, record: record, row: sheet.getLastRow() };
-        byStudentExam[mapKey] = found;
+        items.push(found);
       }
 
       saved.push({
         token: token,
         id: token,
+        clientRecordId: input.clientRecordId || '',
         examId: exam.id,
         round: exam.round,
         school: school,
-        name: name,
+        name: assignedName,
+        requestedName: requestedName,
+        nameAdjusted: assignedName !== requestedName,
+        duplicateNameIndex: studentNameParts_(assignedName).index,
         createdAt: createdAt,
         updatedAt: now
       });
     });
+    SpreadsheetApp.flush();
   } finally {
     lock.releaseLock();
   }
   return { ok: true, count: saved.length, saved: saved };
 }
+
 
 function getReport_(id) {
   ensureLegacyRecords_();
@@ -908,6 +1312,10 @@ function buildSnapshot_(currentRecord) {
       blank: enriched.blank,
       questionResults: enriched.questionResults,
       domainStats: enriched.domainStats,
+      requestedName: enriched.requestedName || '',
+      duplicateNameIndex: Number(enriched.duplicateNameIndex || studentNameParts_(enriched.name).index || 1),
+      nameAliases: Array.isArray(enriched.nameAliases) ? enriched.nameAliases : [],
+      identityFingerprintAliases: identityAliases_(enriched),
       createdAt: enriched.createdAt,
       updatedAt: enriched.updatedAt
     },
@@ -1126,6 +1534,103 @@ function identityFingerprint_(record) {
   return hex;
 }
 
+
+function normalizeSaveIntent_(value) {
+  var intent = normalizeKey_(value);
+  if (intent === 'create' || intent === 'update' || intent === 'sync') return intent;
+  return 'sync';
+}
+
+function extractServerToken_(input) {
+  var candidates = [input && input.serverId, input && input.token, input && input.id];
+  var clientRecordId = String((input && input.clientRecordId) || '').trim();
+  if (/^server-[A-Fa-f0-9]{24,64}$/.test(clientRecordId)) candidates.push(clientRecordId.slice(7));
+  for (var i = 0; i < candidates.length; i += 1) {
+    var token = String(candidates[i] || '').trim();
+    if (/^[A-Fa-f0-9]{24,64}$/.test(token)) return token;
+  }
+  return '';
+}
+
+function studentNameParts_(value) {
+  var name = normalizeText_(value);
+  if (!name) return { name: '', base: '', index: 1 };
+  var match = name.match(/^(.*?)(\d+)$/);
+  if (!match) return { name: name, base: name, index: 1 };
+  var base = normalizeText_(match[1]);
+  var index = Number(match[2]);
+  if (!base || !isFinite(index) || Math.floor(index) !== index || index < 2) {
+    return { name: name, base: name, index: 1 };
+  }
+  return { name: name, base: base, index: index };
+}
+
+function studentNameFamilyKey_(value) {
+  return normalizeKey_(studentNameParts_(value).base);
+}
+
+function sameExamSchool_(record, examId, school) {
+  return String(record && record.examId || '') === String(examId || '') &&
+    normalizeKey_(normalizeSchool_(record && record.school)) === normalizeKey_(normalizeSchool_(school));
+}
+
+function findItemByTokenInItems_(items, token) {
+  var value = String(token || '').trim();
+  if (!value) return null;
+  for (var i = 0; i < items.length; i += 1) if (String(items[i].token || '') === value) return items[i];
+  return null;
+}
+
+function findItemByExactIdentity_(items, examId, school, name) {
+  var key = studentKey_({ school: school, name: name });
+  for (var i = 0; i < items.length; i += 1) {
+    if (items[i].record.examId === examId && studentKey_(items[i].record) === key) return items[i];
+  }
+  return null;
+}
+
+function nextAvailableStudentName_(items, examId, school, requestedName, excludeToken) {
+  var requested = studentNameParts_(requestedName);
+  if (!requested.name) return '';
+  var familyKey = studentNameFamilyKey_(requested.base);
+  var used = {};
+  (items || []).forEach(function (item) {
+    if (!item || !item.record) return;
+    if (excludeToken && String(item.token || '') === String(excludeToken)) return;
+    if (!sameExamSchool_(item.record, examId, school)) return;
+    var parts = studentNameParts_(item.record.name);
+    if (studentNameFamilyKey_(parts.base) !== familyKey) return;
+    used[parts.index] = true;
+  });
+
+  if (!used[requested.index]) return requested.name;
+  var max = 1;
+  Object.keys(used).forEach(function (key) { max = Math.max(max, Number(key) || 1); });
+  return requested.base + String(Math.max(2, max + 1));
+}
+
+function identityAliases_(record) {
+  var source = record && record.identityFingerprintAliases;
+  return Array.isArray(source) ? source.map(function (value) { return String(value || '').toLowerCase(); }).filter(Boolean) : [];
+}
+
+function addIdentityAlias_(record, examId, school, oldName) {
+  var alias = identityFingerprint_({ examId: examId, school: school, name: oldName });
+  var aliases = identityAliases_(record);
+  if (aliases.indexOf(alias) < 0) aliases.push(alias);
+  record.identityFingerprintAliases = aliases;
+  var names = Array.isArray(record.nameAliases) ? record.nameAliases.slice() : [];
+  var normalizedOld = normalizeText_(oldName);
+  if (normalizedOld && names.indexOf(normalizedOld) < 0) names.push(normalizedOld);
+  record.nameAliases = names;
+  return record;
+}
+
+function seedContentKey_(examId, school, name, answers) {
+  return String(examId || '') + '|' + normalizeKey_(normalizeSchool_(school)) + '|' +
+    studentNameFamilyKey_(name) + '|' + JSON.stringify(answers || []);
+}
+
 function normalizeAnswer_(value) {
   var text = normalizeText_(value);
   if (!text || /^(0|x|×|-|_|미기입|무응답|빈칸|blank|none)$/i.test(text)) return '';
@@ -1156,3 +1661,7 @@ function median_(values) {
   var middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
+
+// Public-safe build: existing student seed data is intentionally excluded.
+var LEGACY_SEED_VERSION = '';
+var LEGACY_SEED_RECORDS = [];
