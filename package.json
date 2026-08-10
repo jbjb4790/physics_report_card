@@ -1,6 +1,6 @@
 {
   "name": "tpl-score-report",
-  "version": "3.6.0",
+  "version": "3.8.0",
   "private": true,
   "description": "Young's Physics TPL score report site with automatic revised round-6 answer/option corrections, same-exam duplicate-name numbering, collision-safe student links, Google Sheets cohort statistics, screen-faithful DOCX export, and top-of-form live score/save controls",
   "scripts": {

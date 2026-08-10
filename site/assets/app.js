@@ -53,36 +53,44 @@
   }
 
   function repairRecords(records) {
-    const byIdentity = new Map();
-    (records || []).map(normalizeLocalRecord).filter(Boolean).forEach((record) => {
-      const identity = recordIdentity(record);
-      const previous = byIdentity.get(identity);
-      if (!previous) {
-        byIdentity.set(identity, record);
-        return;
-      }
-      const newer = recordTimestamp(record) >= recordTimestamp(previous) ? record : previous;
-      const older = newer === record ? previous : record;
-      byIdentity.set(identity, {
-        ...older,
-        ...newer,
-        serverId: newer.serverId || older.serverId || '',
-        createdAt: older.createdAt || newer.createdAt,
-        updatedAt: newer.updatedAt || older.updatedAt
+    const latestByStableRef = new Map();
+    (records || []).map(normalizeLocalRecord).filter(Boolean).forEach((record, index) => {
+      const serverId = String(record.serverId || '').trim();
+      const localId = String(record.id || '').trim();
+      const stableRef = serverId ? `server:${serverId}:${recordIdentity(record)}` : (localId ? `local:${localId}` : `row:${index}`);
+      const previous = latestByStableRef.get(stableRef);
+      if (!previous || recordTimestamp(record) >= recordTimestamp(previous)) latestByStableRef.set(stableRef, record);
+    });
+
+    const ordered = [...latestByStableRef.values()].sort((a, b) => {
+      const createdDiff = Date.parse(String(a.createdAt || '')) - Date.parse(String(b.createdAt || ''));
+      if (Number.isFinite(createdDiff) && createdDiff !== 0) return createdDiff;
+      return recordTimestamp(a) - recordTimestamp(b);
+    });
+
+    // v3.5.0: 같은 시험·학교의 동명이인은 첫 학생은 원래 이름,
+    // 두 번째부터 이름2, 이름3 ... 순서로 보존합니다.
+    const numbered = [];
+    ordered.forEach((raw) => {
+      const assignedName = typeof core.nextAvailableStudentName === 'function'
+        ? core.nextAvailableStudentName(numbered, raw)
+        : raw.name;
+      numbered.push({
+        ...raw,
+        name: assignedName || raw.name,
+        autoRenamedFrom: assignedName && assignedName !== raw.name ? raw.name : (raw.autoRenamedFrom || '')
       });
     });
 
     const usedIds = new Set();
     const serverOwners = new Map();
-    const repaired = [];
-    byIdentity.forEach((raw, identity) => {
+    return numbered.map((raw) => {
       const record = { ...raw };
       let serverId = String(record.serverId || '').trim();
       if (serverId) {
         const owner = serverOwners.get(serverId);
+        const identity = recordIdentity(record);
         if (owner && owner !== identity) {
-          // A stale browser ID/token must never make two different students share one link.
-          // Clear the later token so the next open/copy operation re-saves this exact student.
           serverId = '';
           record.serverId = '';
           record.integrityWarning = 'duplicate-server-token-cleared';
@@ -94,9 +102,8 @@
       let id = serverId ? serverLocalId(serverId) : String(record.id || '').trim();
       if (!id || usedIds.has(id)) id = core.makeId('local');
       usedIds.add(id);
-      repaired.push({ ...record, id, serverId });
+      return { ...record, id, serverId };
     });
-    return repaired;
   }
 
   function recordRef(record) {
@@ -121,11 +128,10 @@
     return recordIdentity({ examId: state.examId, school: state.school, name: state.name });
   }
 
-  function resolveExistingRecord(records, editingId, inputRecord) {
-    const identity = recordIdentity(inputRecord);
-    const editingCandidate = editingId ? (records || []).find((item) => item.id === editingId) : null;
-    if (editingCandidate && recordIdentity(editingCandidate) === identity) return editingCandidate;
-    return (records || []).find((item) => recordIdentity(item) === identity) || null;
+  function resolveExistingRecord(records, editingId) {
+    // 새 학생 입력은 같은 시험·학교·이름이 있어도 기존 행을 덮어쓰지 않습니다.
+    // 기존 학생 수정은 반드시 목록의 ‘수정’ 버튼으로 들어온 editingId가 있을 때만 수행합니다.
+    return editingId ? (records || []).find((item) => item.id === editingId) || null : null;
   }
 
   function detachEditingIfIdentityChanged() {
@@ -831,7 +837,7 @@
     return serverSyncRequest;
   }
 
-  async function saveManyRecordsToServer(records) {
+  async function saveManyRecordsToServer(records, options = {}) {
     const valid = (records || [])
       .filter((record) => record?.name && core.getExam(catalog, record.examId))
       .map((record) => ({
@@ -847,17 +853,25 @@
 
     for (const chunk of chunks) {
       try {
-        const response = await requestWithWriteKey({ action: 'saveBatch', payload: JSON.stringify(chunk.map(serverPayload)) });
+        const payload = chunk.map((record) => serverPayload(record, {
+          saveIntent: record.serverId ? 'update' : (options.saveIntent || 'sync')
+        }));
+        const response = await requestWithWriteKey({ action: 'saveBatch', payload: JSON.stringify(payload) });
         const results = Array.isArray(response.saved) ? response.saved : [];
+        const byClientId = new Map(chunk.map((record) => [String(record.id || ''), record]));
         const byKey = new Map(chunk.map((record) => [`${record.examId}|${core.studentKey(record)}`, record]));
         results.forEach((item) => {
-          const original = byKey.get(`${item.examId}|${core.studentKey(item)}`);
+          const original = byClientId.get(String(item.clientRecordId || ''))
+            || byKey.get(`${item.examId}|${core.studentKey(item)}`);
           if (!original || !item.token) return;
           upsertRecord({
             ...original,
+            school: normalizeSchool(item.school || original.school),
+            name: core.normalizeText(item.name || original.name),
             serverId: item.token,
             createdAt: item.createdAt || original.createdAt,
-            updatedAt: item.updatedAt || new Date().toISOString()
+            updatedAt: item.updatedAt || new Date().toISOString(),
+            autoRenamedFrom: item.nameAdjusted ? (item.requestedName || original.name) : (original.autoRenamedFrom || '')
           });
           saved += 1;
         });
@@ -865,8 +879,15 @@
       } catch (error) {
         if (error.code === 'UNKNOWN_ACTION') {
           for (const record of chunk) {
-            try { await saveRecordToServer(record); saved += 1; }
-            catch (singleError) { console.error(singleError); failed += 1; }
+            try {
+              await saveRecordToServer(record, {
+                saveIntent: record.serverId ? 'update' : (options.saveIntent || 'sync')
+              });
+              saved += 1;
+            } catch (singleError) {
+              console.error(singleError);
+              failed += 1;
+            }
           }
         } else {
           console.error(error);
@@ -925,16 +946,34 @@
       return { expectedTotal: 1, candidates: 0, saved: 0, failed: 0 };
     }
     const forceAll = Boolean(options.forceAll);
+    const includeSameIdentity = Boolean(options.includeSameIdentity);
     const cohort = latestSameExamRecords(currentRecord);
     const currentKey = core.studentKey(currentRecord);
-    const candidates = cohort.filter((record) => {
-      if (core.studentKey(record) === currentKey) return false;
-      return forceAll || !record.serverId;
+    const candidateMap = new Map();
+
+    cohort.forEach((record) => {
+      if (core.studentKey(record) === currentKey) return;
+      if (!forceAll && record.serverId) return;
+      candidateMap.set(recordRef(record), record);
     });
+
+    // 새 동명이인을 저장하기 전에 같은 이름의 기존 로컬 학생을 먼저 서버에 반영해야
+    // 서버가 새 학생을 이름2, 이름3 ... 으로 정확히 구분할 수 있습니다.
+    if (includeSameIdentity) {
+      loadRecords().forEach((record) => {
+        if (!record || record.examId !== currentRecord.examId) return;
+        if (core.studentKey(record) !== currentKey) return;
+        if (String(record.id || '') === String(currentRecord.id || '')) return;
+        if (!forceAll && record.serverId) return;
+        candidateMap.set(recordRef(record), record);
+      });
+    }
+
+    const candidates = [...candidateMap.values()];
     if (!candidates.length) return { expectedTotal: cohort.length, candidates: 0, saved: 0, failed: 0 };
 
     updateGenerateProgress(`같은 시험 기존 ${candidates.length}명 서버 반영 중…`);
-    const result = await saveManyRecordsToServer(candidates);
+    const result = await saveManyRecordsToServer(candidates, { saveIntent: 'sync' });
     if (result.failed) {
       const error = new Error(`같은 시험 기존 학생 ${result.failed}명의 Google Sheets 저장에 실패했습니다. 서버 기록 새로고침 후 다시 시도해 주세요.`);
       error.code = 'COHORT_SYNC_FAILED';
@@ -943,22 +982,21 @@
     return { expectedTotal: cohort.length, candidates: candidates.length, ...result };
   }
 
-  async function saveRecordWithFullCohort(record) {
+  async function saveRecordWithFullCohort(record, options = {}) {
     const localCohort = latestSameExamRecords(record);
-    const expectedTotal = Math.max(1, localCohort.length);
+    const isCreate = (options.saveIntent || record.saveIntent) === 'create' && !record.serverId;
+    const hasSameIdentity = loadRecords().some((item) => item.examId === record.examId && core.studentKey(item) === core.studentKey(record) && String(item.id || '') !== String(record.id || ''));
+    const expectedTotal = Math.max(1, localCohort.length + (isCreate && hasSameIdentity ? 1 : 0));
 
-    await ensureSameExamCohortOnServer(record);
+    await ensureSameExamCohortOnServer(record, { includeSameIdentity: isCreate });
     updateGenerateProgress('학생 결과 저장·전체 통계 계산 중…');
-    let saved = await saveRecordToServer(record);
+    let saved = await saveRecordToServer(record, { saveIntent: options.saveIntent || (record.serverId ? 'update' : 'sync') });
     let serverTotal = Number(saved.snapshot?.cohort?.total || 0);
 
-    // 이전 배포·다른 Sheet의 serverId가 남아 있거나 기존 자료가 아직 서버에
-    // 없으면, 같은 시험의 로컬 기록을 한 번 전부 다시 올린 뒤 현재 학생을
-    // 재저장한다. 이 과정을 거쳐 새 학생도 기존 응시자 전체와 비교된다.
     if (config.verifyServerCohortOnSave !== false && serverTotal < expectedTotal) {
       await ensureSameExamCohortOnServer(saved.record || record, { forceAll: true });
       updateGenerateProgress('전체 응시자 평균·석차 다시 계산 중…');
-      saved = await saveRecordToServer(saved.record || record);
+      saved = await saveRecordToServer(saved.record || record, { saveIntent: 'update' });
       serverTotal = Number(saved.snapshot?.cohort?.total || 0);
     }
 
@@ -1094,7 +1132,7 @@
       <div class="card__body">
         ${entryActionDockHtml()}
         <div class="field"><label for="examSelect">시험</label><select id="examSelect" class="select">${catalog.map((item) => `<option value="${escape(item.id)}"${item.id === state.examId ? ' selected' : ''}>${escape(item.title)}</option>`).join('')}</select></div>
-        <div class="form-row"><div class="field"><label for="schoolInput">학교 <span class="field-optional">선택</span></label><input class="input" id="schoolInput" maxlength="60" placeholder="비워두면 ‘미입력’으로 저장됩니다" value="${escape(state.school)}" aria-describedby="schoolInputHelp"><small id="schoolInputHelp">학교를 입력하지 않아도 제출할 수 있으며, 성적표에는 <strong>미입력</strong>으로 표시됩니다.</small></div><div class="field"><label for="nameInput">학생 이름</label><input class="input" id="nameInput" maxlength="30" placeholder="예: 김물리" value="${escape(state.name)}"></div></div>
+        <div class="form-row"><div class="field"><label for="schoolInput">학교 <span class="field-optional">선택</span></label><input class="input" id="schoolInput" maxlength="60" placeholder="비워두면 ‘미입력’으로 저장됩니다" value="${escape(state.school)}" aria-describedby="schoolInputHelp"><small id="schoolInputHelp">학교를 입력하지 않아도 제출할 수 있으며, 성적표에는 <strong>미입력</strong>으로 표시됩니다.</small></div><div class="field"><label for="nameInput">학생 이름</label><input class="input" id="nameInput" maxlength="30" placeholder="예: 김물리" value="${escape(state.name)}" aria-describedby="nameInputHelp"><small id="nameInputHelp">같은 시험·같은 학교에서 같은 이름을 새로 저장하면 첫 학생은 <strong>홍길동</strong>, 다음 학생은 <strong>홍길동2, 홍길동3…</strong>으로 자동 구분됩니다. 기존 학생 점수 수정은 아래 학생 기록의 <strong>수정</strong> 버튼을 사용하세요.</small></div></div>
         <div class="field"><label for="bulkInput">답안 한 번에 붙여넣기</label><textarea class="textarea" id="bulkInput" placeholder="엑셀 한 행을 그대로 복사해 붙여넣거나, 4 5 4 1 ... 형식으로 입력"></textarea><small>엑셀·Google Sheets에서 복사한 탭 구분 행은 <strong>빈 셀 위치까지 그대로 보존</strong>합니다. 공백 구분 입력에서는 0, X, -를 미기입으로 사용하세요.</small></div>
         <div class="button-row" style="margin-top:0"><button class="btn btn--secondary btn--small" type="button" id="applyBulk">붙여넣기 적용</button><button class="btn btn--soft btn--small" type="button" id="sampleData">예시 입력</button></div>
         <div class="form-divider"></div>
@@ -1131,10 +1169,11 @@
     const rows = recordRows(records);
     return `<section id="student-records" class="card anchor-section"><div class="card__head"><div><h2>학생 기록과 결과 링크</h2><p>Google Sheets를 원본으로 사용하여 다른 컴퓨터에서도 같은 학생 기록을 확인합니다.</p></div></div><div class="card__body">
       ${serverSyncPanelHtml(records)}
-      <div class="table-tools"><input id="recordSearch" class="input table-tools__search" type="search" placeholder="학교 또는 학생 이름 검색" value="${escape(state.search)}"><div class="tool-group"><button class="btn btn--soft btn--small" id="exportCsv">CSV</button><button class="btn btn--soft btn--small" id="exportJson">JSON 백업</button>${seedRecords.length ? '<button class="btn btn--soft btn--small" id="restoreSeedData">1·2·3·4·5회 기존 데이터 다시 불러오기</button>' : ''}<button class="btn btn--soft btn--small" id="importData">가져오기</button><input id="importFile" class="hidden" type="file" accept=".csv,.json,text/csv,application/json"></div></div>
+      <div class="table-tools"><input id="recordSearch" class="input table-tools__search" type="search" placeholder="학교 또는 학생 이름 검색" value="${escape(state.search)}"><div class="tool-group"><button class="btn btn--soft btn--small" id="exportCsv">CSV</button><button class="btn btn--soft btn--small" id="exportJson">JSON 백업</button>${seedRecords.length ? '<button class="btn btn--soft btn--small" id="restoreSeedData">1·2·3·4·5회 기존 데이터 다시 불러오기</button>' : ''}<button class="btn btn--soft btn--small" id="importData">CSV·JSON·엑셀 가져오기</button><input id="importFile" class="hidden" type="file" accept=".csv,.json,.xlsx,.xlsm,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12"></div></div>
+      <details class="bulk-excel-panel"><summary>엑셀 결과 입력 일괄 등록</summary><div class="bulk-excel-panel__body"><div class="field"><label for="bulkRecordsInput">결과 입력 시트 붙여넣기</label><textarea class="textarea" id="bulkRecordsInput" placeholder="엑셀의 ‘결과 입력’ 시트에서 A1부터 학생 답안 마지막 열까지 복사해 붙여넣으세요. 이름·문제번호·문제정답 행을 자동으로 찾아 학생들을 한 번에 저장합니다."></textarea><small>업로드 파일은 <strong>.xlsx</strong>를 지원합니다. 붙여넣기는 탭 구분 데이터의 빈 셀 위치를 그대로 보존합니다.</small></div><div class="button-row"><button class="btn btn--primary btn--small" type="button" id="importPastedRecords">붙여넣은 학생 전체 저장</button><button class="btn btn--soft btn--small" type="button" id="clearBulkRecords">붙여넣기 지우기</button><a class="btn btn--secondary btn--small" href="assets/YoungsPhysics_결과입력_엑셀양식.xlsx" download>엑셀 양식 다운로드</a></div></div></details>
       ${rows ? `<div class="table-wrap"><table><thead><tr><th>학생</th><th>시험</th><th>점수</th><th>문항 결과</th><th>수정 시각</th><th><span class="sr-only">작업</span></th></tr></thead><tbody id="recordBody">${rows}</tbody></table></div>` : `<div class="empty-state"><div class="empty-state__mark">◎</div><strong>${state.search ? '검색 결과가 없습니다.' : '아직 학생 기록이 없습니다.'}</strong><span>${state.search ? '다른 이름이나 학교를 검색해 보세요.' : '첫 학생의 답안을 입력하면 전체 평균과 문항별 정답률이 계산됩니다.'}</span></div>`}
       <div class="notice"><strong>기기 간 저장과 개인정보</strong><br>학생 입력은 Google Sheets에 저장되고, 교사용 화면은 서버 기록을 이 기기로 동기화해 표시합니다. 새 컴퓨터에서는 저장 키를 한 번 입력해야 전체 학생 목록을 볼 수 있습니다. 학생 결과 링크는 비밀번호가 없는 ‘소지자 링크’이므로 공개 게시판에는 올리지 마세요.</div>
-      <div class="source-links"><a class="btn btn--secondary btn--small" href="assets/학생답안_입력양식.csv" download>CSV 입력 양식</a><a class="btn btn--secondary btn--small" href="assets/1회v3_학생기록_사이트반영.csv" download>1회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/2회v2_학생기록_사이트반영.csv" download>2회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/3회_학생기록_사이트반영.csv" download>3회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/4회_학생기록_사이트반영.csv" download>4회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/5회_학생기록_사이트반영.csv" download>5회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_1회.pdf" target="_blank">1회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_1회_해설.pdf" target="_blank">1회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_2회.pdf" target="_blank">2회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_2회_해설.pdf" target="_blank">2회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_3회.pdf" target="_blank">3회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_3회_해설.pdf" target="_blank">3회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_4회.pdf" target="_blank">4회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_4회_해설.pdf" target="_blank">4회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_5회.pdf" target="_blank">5회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_5회_해설.pdf" target="_blank">5회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_6회.pdf" target="_blank">6회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_6회_해설.pdf" target="_blank">6회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_7회.pdf" target="_blank">7회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_7회_해설.pdf" target="_blank">7회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_8회.pdf" target="_blank">8회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_8회_해설.pdf" target="_blank">8회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_9회.pdf" target="_blank">9회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_9회_해설.pdf" target="_blank">9회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_10회.pdf" target="_blank">10회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_10회_해설.pdf" target="_blank">10회 해설</a></div>
+      <div class="source-links"><a class="btn btn--secondary btn--small" href="assets/학생답안_입력양식.csv" download>CSV 입력 양식</a><a class="btn btn--secondary btn--small" href="assets/YoungsPhysics_결과입력_엑셀양식.xlsx" download>엑셀 결과 입력 양식</a><a class="btn btn--secondary btn--small" href="assets/1회v3_학생기록_사이트반영.csv" download>1회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/2회v2_학생기록_사이트반영.csv" download>2회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/3회_학생기록_사이트반영.csv" download>3회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/4회_학생기록_사이트반영.csv" download>4회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/5회_학생기록_사이트반영.csv" download>5회 데이터 CSV</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_1회.pdf" target="_blank">1회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_1회_해설.pdf" target="_blank">1회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_2회.pdf" target="_blank">2회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_2회_해설.pdf" target="_blank">2회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_3회.pdf" target="_blank">3회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_3회_해설.pdf" target="_blank">3회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_4회.pdf" target="_blank">4회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_4회_해설.pdf" target="_blank">4회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_5회.pdf" target="_blank">5회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_5회_해설.pdf" target="_blank">5회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_6회.pdf" target="_blank">6회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_6회_해설.pdf" target="_blank">6회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_7회.pdf" target="_blank">7회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_7회_해설.pdf" target="_blank">7회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_8회.pdf" target="_blank">8회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_8회_해설.pdf" target="_blank">8회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_9회.pdf" target="_blank">9회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_9회_해설.pdf" target="_blank">9회 해설</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_10회.pdf" target="_blank">10회 시험지</a><a class="btn btn--secondary btn--small" href="assets/TPL_중급_모의고사_10회_해설.pdf" target="_blank">10회 해설</a></div>
     </div></section>`;
   }
 
@@ -1361,6 +1400,8 @@
     });
     document.getElementById('importData')?.addEventListener('click', () => document.getElementById('importFile')?.click());
     document.getElementById('importFile')?.addEventListener('change', importFile);
+    document.getElementById('importPastedRecords')?.addEventListener('click', importPastedRecords);
+    document.getElementById('clearBulkRecords')?.addEventListener('click', () => { const input = document.getElementById('bulkRecordsInput'); if (input) input.value = ''; });
   }
 
   function renderRecordsArea() {
@@ -1383,7 +1424,8 @@
     return true;
   }
 
-  function serverPayload(record) {
+  function serverPayload(record, options = {}) {
+    const saveIntent = options.saveIntent || record.saveIntent || (record.serverId ? 'update' : 'sync');
     return {
       examId: record.examId,
       round: record.round,
@@ -1392,21 +1434,43 @@
       answers: record.answers,
       createdAt: record.createdAt,
       clientRecordId: record.id || '',
+      serverId: record.serverId || '',
+      saveIntent,
       identityFingerprint: typeof core.identityFingerprint === 'function' ? core.identityFingerprint(record) : ''
     };
   }
 
-  async function saveRecordToServer(record) {
-    const response = await requestWithWriteKey({ action: 'save', payload: JSON.stringify(serverPayload(record)) });
-    if (response.report?.record) assertSnapshotMatchesRecord(response.report, record);
+  async function saveRecordToServer(record, options = {}) {
+    const response = await requestWithWriteKey({ action: 'save', payload: JSON.stringify(serverPayload(record, options)) });
     const serverId = response.token || response.id || response.report?.record?.id || record.serverId || '';
     if (!serverId) throw new Error('서버가 학생별 결과 토큰을 반환하지 않았습니다.');
-    const savedRecord = upsertRecord({ ...record, id: serverLocalId(serverId), serverId });
+
+    const serverRecord = response.report?.record || {};
+    const assignedName = core.normalizeText(serverRecord.name || response.assignedName || record.name);
+    const assignedSchool = normalizeSchool(serverRecord.school || record.school);
+    const assignedAnswers = core.normalizeAnswers(serverRecord.answers || record.answers, core.getExam(catalog, record.examId).answerCount);
+    const savedRecord = upsertRecord({
+      ...record,
+      ...serverRecord,
+      id: serverLocalId(serverId),
+      serverId,
+      school: assignedSchool,
+      name: assignedName,
+      answers: assignedAnswers,
+      autoRenamedFrom: response.nameAdjusted ? (response.requestedName || record.name) : (record.autoRenamedFrom || '')
+    });
     const snapshot = response.report?.record
       ? response.report
       : core.buildSnapshot(catalog, savedRecord, loadRecords());
     assertSnapshotMatchesRecord(snapshot, savedRecord);
-    return { record: savedRecord, serverId, snapshot };
+    return {
+      record: savedRecord,
+      serverId,
+      snapshot,
+      nameAdjusted: Boolean(response.nameAdjusted || assignedName !== core.normalizeText(record.name)),
+      requestedName: response.requestedName || core.normalizeText(record.name),
+      assignedName
+    };
   }
 
   async function ensureRecordLink(record) {
@@ -1421,7 +1485,7 @@
         focusWriteKeyField('Google Sheets 저장 키를 한 번 입력한 뒤 다시 눌러 주세요.');
         throw new Error('Google Sheets 저장 키가 저장되지 않았습니다.');
       }
-      const saved = await saveRecordWithFullCohort(current);
+      const saved = await saveRecordWithFullCohort(current, { saveIntent: current.serverId ? 'update' : 'sync' });
       current = saved.record;
       serverId = saved.serverId;
       snapshot = saved.snapshot;
@@ -1442,35 +1506,42 @@
     state.busy = true; state.busyMessage = '저장·링크 복사 중…'; render();
     try {
       const records = loadRecords();
-      const existing = resolveExistingRecord(records, state.editingId, {
-        examId: state.examId,
-        school: state.school,
-        name: state.name
-      });
+      const existing = resolveExistingRecord(records, state.editingId);
+      const isEditing = Boolean(existing);
+      const requestedName = core.normalizeText(state.name);
+      const school = normalizeSchool(state.school);
+      const localAssignedName = !isEditing && state.storageMode !== 'apps-script' && typeof core.nextAvailableStudentName === 'function'
+        ? core.nextAvailableStudentName(records, { examId: state.examId, school, name: requestedName })
+        : requestedName;
       const draft = {
         id: existing?.id || core.makeId('local'),
         examId: state.examId,
         round: exam().round,
-        school: normalizeSchool(state.school),
-        name: core.normalizeText(state.name),
+        school,
+        name: localAssignedName,
         answers: core.normalizeAnswers(state.answers, exam().answerCount),
         createdAt: existing?.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        serverId: existing?.serverId || ''
+        serverId: existing?.serverId || '',
+        saveIntent: isEditing ? 'update' : 'create'
       };
 
       let record;
       let snapshot;
       let serverId = '';
       let serverWorked = false;
+      let nameAdjusted = localAssignedName !== requestedName;
+      let assignedName = localAssignedName;
       if (state.storageMode === 'apps-script') {
         saveSettings();
         try {
-          const saved = await saveRecordWithFullCohort(draft);
+          const saved = await saveRecordWithFullCohort(draft, { saveIntent: isEditing ? 'update' : 'create' });
           record = saved.record;
           serverId = saved.serverId;
           snapshot = saved.snapshot;
           serverWorked = Boolean(serverId);
+          nameAdjusted = Boolean(saved.nameAdjusted);
+          assignedName = saved.assignedName || record.name;
           if (!serverWorked) throw new Error('서버가 학생 결과 토큰을 반환하지 않았습니다.');
         } catch (error) {
           if (error.code === 'WRITE_KEY_NOT_SAVED' || error.code === 'INVALID_WRITE_KEY') focusWriteKeyField();
@@ -1490,13 +1561,19 @@
         console.warn('생성된 링크 자동 복사 실패', copyError);
       }
       assertSnapshotMatchesRecord(snapshot, record);
-      openLinkModal(url, snapshot, serverWorked, copied);
-      // Do not carry the previous student's local ID into the next entry.
-      // Re-submitting the same identity still updates it by exam + school + name.
+      openLinkModal(url, snapshot, serverWorked, copied, {
+        nameAdjusted,
+        requestedName,
+        assignedName: assignedName || record.name
+      });
       state.editingId = '';
       state.editingIdentity = '';
       const cohortTotal = Number(snapshot?.cohort?.total || 1);
-      toast(copied ? `${record.name} 학생 링크를 복사했습니다. 같은 시험 ${cohortTotal}명 기준으로 평균과 석차를 계산했습니다.` : `${record.name} 학생의 성적 분석 링크를 생성했습니다. 같은 시험 ${cohortTotal}명 기준입니다.`, copied ? 'good' : '');
+      const renameMessage = nameAdjusted ? ` 같은 시험·학교에 동명이인이 있어 ${requestedName} → ${record.name}으로 자동 구분했습니다.` : '';
+      toast(copied
+        ? `${record.name} 학생 링크를 복사했습니다.${renameMessage} 같은 시험 ${cohortTotal}명 기준으로 평균과 석차를 계산했습니다.`
+        : `${record.name} 학생의 성적 분석 링크를 생성했습니다.${renameMessage} 같은 시험 ${cohortTotal}명 기준입니다.`,
+      copied ? 'good' : '');
       if (serverWorked) syncServerRecords({ silent: true, force: true });
     } catch (error) {
       console.error(error); toast(`리포트 생성 중 오류: ${error.message}`, 'error');
@@ -1505,13 +1582,13 @@
     }
   }
 
-  function openLinkModal(url, snapshot, serverWorked, copied = false) {
+  function openLinkModal(url, snapshot, serverWorked, copied = false, naming = {}) {
     const cohort = snapshot.cohort || {};
     const cohortTotal = Math.max(1, Number(cohort.total || 1));
     const cohortRank = cohort.rank ? `${cohort.rank} / ${cohortTotal}` : '—';
     const modal = document.createElement('div');
     modal.className = 'modal-backdrop';
-    modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="linkModalTitle"><div class="modal__head"><div><h3 id="linkModalTitle">${copied ? '성적 분석 링크 복사 완료' : `${escape(snapshot.record.name)} 학생 전용 링크`}</h3><p style="margin:5px 0 0;color:var(--muted);font-size:12px">${escape(snapshot.record.school)} · ${escape(snapshot.record.examTitle)}</p></div><button class="close-button" aria-label="닫기">×</button></div><div class="modal__body"><div class="link-copy-alert ${copied ? 'is-copied' : 'is-manual'}"><strong>${copied ? '바로 붙여넣을 수 있게 클립보드에 복사했습니다.' : '브라우저가 자동 복사를 막았습니다.'}</strong><span>${copied ? '카카오톡, 문자, 이메일 등에 그대로 붙여넣어 공유하면 됩니다.' : '아래의 큰 링크 복사 버튼을 한 번 눌러 주세요.'}</span></div><div class="score-preview"><div class="score-preview__row"><div><span class="quick-stat__label">산출 점수</span><div class="score-preview__score">${core.formatScore(snapshot.record.score)}<small>/100</small></div></div><div class="score-preview__counts"><span class="count-pill good">정답 ${snapshot.record.correct}</span><span class="count-pill bad">오답 ${snapshot.record.wrong}</span><span class="count-pill blank">미기입 ${snapshot.record.blank}</span></div></div><div class="score-preview__cohort"><div><span>동일 시험 기준</span><strong>${cohortTotal}명</strong></div><div><span>전체 평균</span><strong>${core.formatScore(cohort.average || 0)}점</strong></div><div><span>석차</span><strong>${cohortRank}</strong></div></div></div><div class="link-box">${escape(url)}</div><div class="button-row link-modal-actions"><button class="btn btn--primary" id="modalCopy"><span class="btn-symbol">↗</span>링크 다시 복사</button><a class="btn btn--secondary" href="${escape(url)}" target="_blank" rel="noopener">성적표 열기</a></div><p style="font-size:11px;color:var(--muted)">${serverWorked ? 'Google Sheet에서 무작위 토큰으로 결과와 최신 누적 통계를 불러옵니다. 링크를 아는 사람은 별도 로그인 없이 학생 리포트를 볼 수 있습니다.' : '링크 안에 현재 성적과 통계 백업이 포함되어 있어 다른 기기에서도 열 수 있습니다.'}</p></div></div>`;
+    modal.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="linkModalTitle"><div class="modal__head"><div><h3 id="linkModalTitle">${copied ? '성적 분석 링크 복사 완료' : `${escape(snapshot.record.name)} 학생 전용 링크`}</h3><p style="margin:5px 0 0;color:var(--muted);font-size:12px">${escape(snapshot.record.school)} · ${escape(snapshot.record.examTitle)}</p></div><button class="close-button" aria-label="닫기">×</button></div><div class="modal__body">${naming.nameAdjusted ? `<div class="notice notice--info duplicate-name-notice"><strong>동명이인 이름 자동 구분</strong><br>${escape(naming.requestedName)} → <strong>${escape(naming.assignedName)}</strong><br><span>같은 시험·학교에서 다음 동명이인은 숫자가 하나씩 증가합니다. 기존 학생 수정은 학생 기록의 ‘수정’ 버튼을 사용하세요.</span></div>` : ''}<div class="link-copy-alert ${copied ? 'is-copied' : 'is-manual'}"><strong>${copied ? '바로 붙여넣을 수 있게 클립보드에 복사했습니다.' : '브라우저가 자동 복사를 막았습니다.'}</strong><span>${copied ? '카카오톡, 문자, 이메일 등에 그대로 붙여넣어 공유하면 됩니다.' : '아래의 큰 링크 복사 버튼을 한 번 눌러 주세요.'}</span></div><div class="score-preview"><div class="score-preview__row"><div><span class="quick-stat__label">산출 점수</span><div class="score-preview__score">${core.formatScore(snapshot.record.score)}<small>/100</small></div></div><div class="score-preview__counts"><span class="count-pill good">정답 ${snapshot.record.correct}</span><span class="count-pill bad">오답 ${snapshot.record.wrong}</span><span class="count-pill blank">미기입 ${snapshot.record.blank}</span></div></div><div class="score-preview__cohort"><div><span>동일 시험 기준</span><strong>${cohortTotal}명</strong></div><div><span>전체 평균</span><strong>${core.formatScore(cohort.average || 0)}점</strong></div><div><span>석차</span><strong>${cohortRank}</strong></div></div></div><div class="link-box">${escape(url)}</div><div class="button-row link-modal-actions"><button class="btn btn--primary" id="modalCopy"><span class="btn-symbol">↗</span>링크 다시 복사</button><a class="btn btn--secondary" href="${escape(url)}" target="_blank" rel="noopener">성적표 열기</a></div><p style="font-size:11px;color:var(--muted)">${serverWorked ? 'Google Sheet에서 무작위 토큰으로 결과와 최신 누적 통계를 불러옵니다. 링크를 아는 사람은 별도 로그인 없이 학생 리포트를 볼 수 있습니다.' : '링크 안에 현재 성적과 통계 백업이 포함되어 있어 다른 기기에서도 열 수 있습니다.'}</p></div></div>`;
     document.body.appendChild(modal);
     const close = () => modal.remove();
     modal.addEventListener('click', (event) => { if (event.target === modal || event.target.closest('.close-button')) close(); });
@@ -1572,36 +1649,305 @@
     download(JSON.stringify({version:1,exportedAt:new Date().toISOString(),records}, null, 2), 'application/json;charset=utf-8', `TPL_학생기록_백업_${new Date().toISOString().slice(0,10)}.json`);
   }
 
+
+
+  function normalizeImportedCell(value) {
+    if (value == null) return '';
+    if (typeof value === 'number') return Number.isInteger(value) ? String(value) : String(value);
+    return String(value).replace(/\u00a0/g, ' ').trim();
+  }
+
+  function gridFromDelimitedText(text) {
+    const raw = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').replace(/\n+$/g, '');
+    if (!raw.trim()) return [];
+    return raw.split('\n').map((line) => {
+      if (line.includes('\t')) return line.split('\t').map(normalizeImportedCell);
+      if (line.includes(',')) return parseLooseCsvLine(line).map(normalizeImportedCell);
+      return line.trim().split(/\s+/).map(normalizeImportedCell);
+    });
+  }
+
+  function parseLooseCsvLine(line) {
+    const row = [];
+    let field = '';
+    let quoted = false;
+    const input = String(line || '');
+    for (let i = 0; i < input.length; i += 1) {
+      const char = input[i];
+      if (quoted) {
+        if (char === '"' && input[i + 1] === '"') { field += '"'; i += 1; }
+        else if (char === '"') quoted = false;
+        else field += char;
+      } else if (char === '"') quoted = true;
+      else if (char === ',') { row.push(field); field = ''; }
+      else field += char;
+    }
+    row.push(field);
+    return row;
+  }
+
+  function normLabel(value) {
+    return core.normalizeText(value).replace(/\s+/g, '').toLowerCase();
+  }
+
+  function inferExamIdFromImport(grid, sourceName = '') {
+    const headerText = [sourceName]
+      .concat((grid || []).slice(0, 8).map((row) => row.join(' ')))
+      .join(' ');
+    const match = headerText.match(/(\d{1,2})\s*회/);
+    if (match) {
+      const round = Number(match[1]);
+      const found = catalog.find((item) => Number(item.round) === round);
+      if (found) return found.id;
+    }
+    return state.examId;
+  }
+
+  function findSequentialQuestionStart(row, count) {
+    const normalized = (row || []).map((cell) => Number(core.normalizeText(cell)));
+    for (let start = 0; start < normalized.length; start += 1) {
+      let matched = 0;
+      for (let offset = 0; offset < count; offset += 1) {
+        if (normalized[start + offset] === offset + 1) matched += 1;
+        else break;
+      }
+      if (matched >= Math.min(8, count)) return start;
+    }
+    return -1;
+  }
+
+  function findAnswerStart(grid, count) {
+    const rows = grid || [];
+    for (const row of rows) {
+      const labelIndex = row.findIndex((cell) => /문제\s*번호/i.test(core.normalizeText(cell)));
+      if (labelIndex >= 0) return labelIndex + 1;
+      const seq = findSequentialQuestionStart(row, count);
+      if (seq >= 0) return seq;
+    }
+    for (const row of rows) {
+      const labelIndex = row.findIndex((cell) => /문제\s*정답|정답/i.test(core.normalizeText(cell)));
+      if (labelIndex >= 0) return labelIndex + 1;
+    }
+    return -1;
+  }
+
+  function parseResultGridToRecords(grid, sourceName = '') {
+    const cleanGrid = (grid || []).map((row) => (row || []).map(normalizeImportedCell));
+    if (!cleanGrid.length) throw new Error('가져올 표 데이터가 비어 있습니다.');
+    const examId = inferExamIdFromImport(cleanGrid, sourceName);
+    const targetExam = core.getExam(catalog, examId) || exam();
+    const count = Number(targetExam.answerCount || 20);
+    const headerIndex = cleanGrid.findIndex((row) => row.some((cell) => ['이름', '성명', '학생명', '학생'].includes(normLabel(cell))));
+    if (headerIndex < 0) throw new Error('이름 또는 성명 열을 찾지 못했습니다. 결과 입력 시트의 헤더를 확인하세요.');
+    const header = cleanGrid[headerIndex];
+    const nameCol = header.findIndex((cell) => ['이름', '성명', '학생명', '학생'].includes(normLabel(cell)));
+    const schoolCol = header.findIndex((cell) => ['학교', '학교명', '학원', '소속'].includes(normLabel(cell)));
+    const answerStart = findAnswerStart(cleanGrid.slice(0, Math.max(headerIndex + 1, 6)), count);
+    if (answerStart < 0) throw new Error('문제번호 1~20 또는 문제정답 행을 찾지 못했습니다.');
+    const now = new Date().toISOString();
+    const records = [];
+    let startedStudentRows = false;
+    let blankNameStreak = 0;
+    for (let rowIndex = headerIndex + 1; rowIndex < cleanGrid.length; rowIndex += 1) {
+      const row = cleanGrid[rowIndex] || [];
+      const name = core.normalizeText(row[nameCol]);
+      if (!name) {
+        if (startedStudentRows) {
+          blankNameStreak += 1;
+          if (blankNameStreak >= 5) break;
+        }
+        continue;
+      }
+      blankNameStreak = 0;
+      if (/^(이름|성명|합계|평균|응시인원계산)$/i.test(name) || /^\d+(?:\.\d+)?$/.test(name)) continue;
+      const answers = Array.from({ length: count }, (_, index) => core.normalizeAnswer(row[answerStart + index]));
+      const normalized = core.normalizeAnswers(answers, count);
+      if (!normalized.some((answer) => answer !== '')) continue;
+      startedStudentRows = true;
+      records.push({
+        id: core.makeId('excel'),
+        examId,
+        round: targetExam.round,
+        school: normalizeSchool(schoolCol >= 0 ? row[schoolCol] : ''),
+        name,
+        answers: normalized,
+        createdAt: now,
+        updatedAt: now,
+        importSource: sourceName || '결과 입력'
+      });
+    }
+    if (!records.length) throw new Error('학생 이름과 문항 답안이 있는 행을 찾지 못했습니다.');
+    return { records, examId, examTitle: targetExam.title, answerStart, headerIndex };
+  }
+
+  async function importRecords(records, sourceLabel = '가져오기') {
+    const valid = (records || [])
+      .filter((record) => record?.name && core.getExam(catalog, record.examId))
+      .map((record) => ({
+        ...record,
+        school: normalizeSchool(record.school),
+        name: core.normalizeText(record.name),
+        answers: core.normalizeAnswers(record.answers, core.getExam(catalog, record.examId).answerCount)
+      }));
+    if (!valid.length) { toast('가져올 학생 기록이 없습니다.', 'error'); return; }
+    if (state.storageMode === 'apps-script') {
+      state.writeKey = state.writeKey || readWriteKey();
+      if (!state.writeKey) { focusWriteKeyField(`${sourceLabel} 학생 기록을 Google Sheets에 저장하려면 저장 키를 입력해 주세요.`); return; }
+      const result = await saveManyRecordsToServer(valid, { saveIntent: 'create' });
+      await syncServerRecords({ silent: true, force: true });
+      if (result.failed) toast(`${sourceLabel}: ${result.saved}개 서버 저장, ${result.failed}개 실패했습니다.`, 'error');
+      else toast(`${sourceLabel}: ${result.saved}개 학생 기록을 Google Sheets에 저장했습니다.`, 'good');
+    } else {
+      valid.forEach((record) => upsertRecord(record));
+      render();
+      toast(`${sourceLabel}: ${valid.length}개 학생 기록을 이 브라우저에 저장했습니다.`, 'good');
+    }
+  }
+
+  async function importPastedRecords() {
+    const input = document.getElementById('bulkRecordsInput');
+    const text = input?.value || '';
+    try {
+      const parsed = parseResultGridToRecords(gridFromDelimitedText(text), '붙여넣기 결과 입력');
+      await importRecords(parsed.records, `${parsed.examTitle} 붙여넣기`);
+      if (input) input.value = '';
+    } catch (error) {
+      toast(`붙여넣기 가져오기 실패: ${error.message}`, 'error');
+    }
+  }
+
+  function readUInt16LE(bytes, offset) { return bytes[offset] | (bytes[offset + 1] << 8); }
+  function readUInt32LE(bytes, offset) { return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0; }
+
+  async function inflateRaw(bytes) {
+    if (typeof DecompressionStream === 'undefined') throw new Error('이 브라우저는 .xlsx 압축 해제를 지원하지 않습니다. 엑셀에서 결과 입력 시트를 복사해 붙여넣기로 가져오세요.');
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  async function unzipEntries(arrayBuffer) {
+    const bytes = new Uint8Array(arrayBuffer);
+    let eocd = -1;
+    for (let offset = bytes.length - 22; offset >= 0; offset -= 1) {
+      if (readUInt32LE(bytes, offset) === 0x06054b50) { eocd = offset; break; }
+    }
+    if (eocd < 0) throw new Error('올바른 XLSX 압축 파일이 아닙니다.');
+    const entryCount = readUInt16LE(bytes, eocd + 10);
+    const centralOffset = readUInt32LE(bytes, eocd + 16);
+    const decoder = new TextDecoder('utf-8');
+    const entries = new Map();
+    let ptr = centralOffset;
+    for (let i = 0; i < entryCount; i += 1) {
+      if (readUInt32LE(bytes, ptr) !== 0x02014b50) break;
+      const method = readUInt16LE(bytes, ptr + 10);
+      const compressedSize = readUInt32LE(bytes, ptr + 20);
+      const nameLen = readUInt16LE(bytes, ptr + 28);
+      const extraLen = readUInt16LE(bytes, ptr + 30);
+      const commentLen = readUInt16LE(bytes, ptr + 32);
+      const localOffset = readUInt32LE(bytes, ptr + 42);
+      const name = decoder.decode(bytes.slice(ptr + 46, ptr + 46 + nameLen));
+      const localNameLen = readUInt16LE(bytes, localOffset + 26);
+      const localExtraLen = readUInt16LE(bytes, localOffset + 28);
+      const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+      const compressed = bytes.slice(dataStart, dataStart + compressedSize);
+      let content;
+      if (method === 0) content = compressed;
+      else if (method === 8) content = await inflateRaw(compressed);
+      else throw new Error(`지원하지 않는 XLSX 압축 방식입니다: ${method}`);
+      entries.set(name.replace(/^\//, ''), content);
+      ptr += 46 + nameLen + extraLen + commentLen;
+    }
+    return entries;
+  }
+
+  function xmlText(entries, path) {
+    const data = entries.get(path);
+    return data ? new TextDecoder('utf-8').decode(data) : '';
+  }
+
+  function parseXml(text) {
+    const doc = new DOMParser().parseFromString(text, 'application/xml');
+    if (doc.querySelector('parsererror')) throw new Error('XLSX 내부 XML을 읽지 못했습니다.');
+    return doc;
+  }
+
+  function resolveXlsxTarget(base, target) {
+    if (!target) return '';
+    if (target.startsWith('/')) return target.slice(1);
+    const parts = base.split('/');
+    parts.pop();
+    target.split('/').forEach((part) => {
+      if (!part || part === '.') return;
+      if (part === '..') parts.pop();
+      else parts.push(part);
+    });
+    return parts.join('/');
+  }
+
+  function cellCoords(ref) {
+    const match = String(ref || '').match(/^([A-Z]+)(\d+)/i);
+    if (!match) return null;
+    let col = 0;
+    match[1].toUpperCase().split('').forEach((char) => { col = col * 26 + char.charCodeAt(0) - 64; });
+    return { row: Number(match[2]) - 1, col: col - 1 };
+  }
+
+  async function xlsxFileToGrid(file) {
+    const entries = await unzipEntries(await file.arrayBuffer());
+    const shared = [];
+    const sharedXml = xmlText(entries, 'xl/sharedStrings.xml');
+    if (sharedXml) {
+      [...parseXml(sharedXml).querySelectorAll('si')].forEach((si) => {
+        shared.push([...si.querySelectorAll('t')].map((node) => node.textContent || '').join(''));
+      });
+    }
+    const wbDoc = parseXml(xmlText(entries, 'xl/workbook.xml'));
+    const relDoc = parseXml(xmlText(entries, 'xl/_rels/workbook.xml.rels'));
+    const rels = new Map([...relDoc.querySelectorAll('Relationship')].map((rel) => [rel.getAttribute('Id'), resolveXlsxTarget('xl/workbook.xml', rel.getAttribute('Target'))]));
+    const sheets = [...wbDoc.querySelectorAll('sheet')].map((sheet) => ({
+      name: sheet.getAttribute('name') || '',
+      path: rels.get(sheet.getAttribute('r:id') || sheet.getAttribute('id') || '')
+    })).filter((sheet) => sheet.path);
+    const chosen = sheets.find((sheet) => sheet.name === '결과 입력') || sheets.find((sheet) => /결과/.test(sheet.name)) || sheets[0];
+    if (!chosen) throw new Error('XLSX 안에서 시트를 찾지 못했습니다.');
+    const sheetDoc = parseXml(xmlText(entries, chosen.path));
+    const grid = [];
+    [...sheetDoc.querySelectorAll('sheetData c')].forEach((cell) => {
+      const coord = cellCoords(cell.getAttribute('r'));
+      if (!coord) return;
+      const type = cell.getAttribute('t');
+      let value = '';
+      if (type === 's') {
+        const index = Number(cell.querySelector('v')?.textContent || 0);
+        value = shared[index] || '';
+      } else if (type === 'inlineStr') {
+        value = [...cell.querySelectorAll('t')].map((node) => node.textContent || '').join('');
+      } else {
+        value = cell.querySelector('v')?.textContent || '';
+      }
+      if (!grid[coord.row]) grid[coord.row] = [];
+      grid[coord.row][coord.col] = normalizeImportedCell(value);
+    });
+    return { grid: grid.map((row) => row || []), sheetName: chosen.name };
+  }
+
   async function importFile(event) {
     const file = event.target.files?.[0]; event.target.value=''; if (!file) return;
     try {
-      const text = await file.text();
       let incoming;
-      if (/\.csv$/i.test(file.name)) incoming = core.csvToRecords(text, catalog);
-      else { const parsed = JSON.parse(text); incoming = Array.isArray(parsed) ? parsed : parsed.records; }
-      if (!Array.isArray(incoming)) throw new Error('학생 기록 배열이 없습니다.');
-      const valid = incoming
-        .filter((record) => record?.name && core.getExam(catalog, record.examId))
-        .map((record) => ({
-          ...record,
-          school: normalizeSchool(record.school),
-          name: core.normalizeText(record.name),
-          answers: core.normalizeAnswers(record.answers, core.getExam(catalog, record.examId).answerCount),
-          createdAt: record.createdAt || new Date().toISOString()
-        }));
-
-      if (state.storageMode === 'apps-script') {
-        state.writeKey = state.writeKey || readWriteKey();
-        if (!state.writeKey) { focusWriteKeyField('가져온 학생 기록을 모든 기기에 저장하려면 Google Sheets 저장 키를 입력해 주세요.'); return; }
-        const result = await saveManyRecordsToServer(valid);
-        await syncServerRecords({ silent: true, force: true });
-        if (result.failed) toast(`${result.saved}개 서버 저장, ${result.failed}개 실패했습니다.`, 'error');
-        else toast(`${result.saved}개 학생 기록을 Google Sheets에 가져왔습니다.`, 'good');
+      let sourceLabel = file.name;
+      if (/\.xlsx$|\.xlsm$/i.test(file.name)) {
+        const sheet = await xlsxFileToGrid(file);
+        const parsed = parseResultGridToRecords(sheet.grid, file.name);
+        incoming = parsed.records;
+        sourceLabel = `${parsed.examTitle} · ${sheet.sheetName}`;
       } else {
-        valid.forEach((record) => upsertRecord(record));
-        render();
-        toast(`${valid.length}개 학생 기록을 이 브라우저에 가져왔습니다.`, 'good');
+        const text = await file.text();
+        if (/\.csv$/i.test(file.name)) incoming = core.csvToRecords(text, catalog);
+        else { const parsed = JSON.parse(text); incoming = Array.isArray(parsed) ? parsed : parsed.records; }
       }
+      if (!Array.isArray(incoming)) throw new Error('학생 기록 배열이 없습니다.');
+      await importRecords(incoming, sourceLabel);
     } catch (error) { toast(`파일을 가져오지 못했습니다: ${error.message}`, 'error'); }
   }
 

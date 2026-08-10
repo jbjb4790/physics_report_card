@@ -78,8 +78,12 @@
   function assertLinkFingerprint(snapshot, link) {
     const expected = String(link?.expectedFingerprint || '').trim().toLowerCase();
     if (!expected || typeof core.identityFingerprint !== 'function') return;
-    const actual = core.identityFingerprint(snapshot?.record || {}).toLowerCase();
-    if (actual !== expected) {
+    const record = snapshot?.record || {};
+    const actual = core.identityFingerprint(record).toLowerCase();
+    const aliases = Array.isArray(record.identityFingerprintAliases)
+      ? record.identityFingerprintAliases.map((value) => String(value || '').toLowerCase())
+      : [];
+    if (actual !== expected && !aliases.includes(expected)) {
       throw new Error('학생 링크와 서버의 학생 정보가 일치하지 않습니다. 다른 학생의 성적표가 표시되지 않도록 열람을 차단했습니다. 교사에게 새 링크를 요청해 주세요.');
     }
   }
@@ -163,16 +167,23 @@
     const total = Number(c.total || 1);
     const topRate = c.rank && total ? core.round(Number(c.rank) / total * 100, 1) : null;
     const percentile = topRate == null ? '비교 데이터 준비 중' : `상위 ${fmt(topRate)}%`;
+    const scoreGap = signed(Number(r.score || 0) - Number(c.average || 0));
     return `<section id="dashboard" class="report-section report-cover anchor-section">
       <div class="report-cover__date">리포트 생성일 ${esc(core.formatDate(snapshot.generatedAt))}</div>
+      <div class="report-cover__brandline"><img src="assets/youngs-physics-logo.png" alt="Young's Physics"></div>
       <div class="report-cover__profile">
         <div class="report-cover__avatar"><img src="assets/youngs-physics-mark.png" alt=""></div>
-        <div class="report-cover__identity"><p class="report-kicker">YOUNG'S PHYSICS · PERSONAL SCORE REPORT</p><h1>${esc(r.name)} <span>학생</span></h1><div class="report-cover__tags"><span>${esc(r.school)}</span><span>${esc(exam.title)}</span><span>${esc(sourceLabel(snapshot))}</span></div></div>
+        <div class="report-cover__identity"><p class="report-kicker">YOUNG'S PHYSICS · PERSONAL SCORE REPORT</p><h1>${esc(r.name)} <span>학생</span></h1><p class="report-cover__subtitle">시험 결과를 한눈에 확인하고, 바로 오답 학습까지 이어지는 개인 맞춤 리포트입니다.</p><div class="report-cover__tags"><span>${esc(r.school)}</span><span>${esc(exam.title)}</span><span>${esc(sourceLabel(snapshot))}</span></div></div>
       </div>
       <div class="report-cover__metrics">
-        <div class="cover-metric"><span>총점</span><strong>${fmt(r.score)}<small>/100</small></strong><em>${percentile}</em></div>
+        <div class="cover-metric"><span>총점</span><strong>${fmt(r.score)}<small>/100</small></strong><em>현재 성취 결과</em></div>
         <div class="cover-metric"><span>정답률</span><strong>${fmt(r.correct / exam.answerCount * 100)}<small>%</small></strong><em>정답 ${r.correct} · 오답 ${r.wrong} · 미기입 ${r.blank}</em></div>
         <div class="cover-metric"><span>전체 평균</span><strong>${fmt(c.average || 0)}<small>점</small></strong><em>${total}명 비교 기준</em></div>
+      </div>
+      <div class="report-cover__glance">
+        <div class="glance-card"><span>평균 대비</span><strong>${scoreGap}점</strong><em>${Number(r.score||0) >= Number(c.average||0) ? '집단 평균 이상' : '보완 학습 권장'}</em></div>
+        <div class="glance-card"><span>상위 비율</span><strong>${percentile}</strong><em>누적 집단 기준</em></div>
+        <div class="glance-card"><span>학습 포커스</span><strong>${r.wrong + r.blank}문항</strong><em>오답·미기입 집중 복습</em></div>
       </div>
       <div class="report-cover__foot">점수 확인부터 오답 해설·필수 공식·같은 풀이 방식의 동형 문제까지 한 페이지에서 학습합니다.</div>
     </section>`;
@@ -237,8 +248,14 @@
     const topRate=c.rank&&total?core.round(Number(c.rank)/total*100,1):null;
     const percentile=topRate!=null?`상위 ${fmt(topRate)}%`:'—';
     const comparisonCaution=total<2?'현재 비교 집단이 학생 본인 1명뿐이므로 평균·정답률은 참고용입니다. 다른 학생 기록이 누적되면 자동 갱신됩니다.':`${total}명의 같은 시험 기록을 기준으로 계산했습니다.`;
-    return `<section id="scorecard" class="report-section anchor-section"><div class="section-heading"><div><p class="section-kicker">01 · SCORECARD</p><h2 class="section-title">성적표와 전체 성적 비교</h2><p class="section-desc">정답·오답·미기입을 채점 규칙에 따라 분리하고 동일 시험 집단과 비교합니다.</p></div><span class="tag">${esc(sourceLabel(snapshot))}</span></div>
-      <div class="score-hero"><div class="score-main"><div class="score-main__label">TOTAL SCORE</div><div class="score-main__value">${fmt(r.score)}<small>/100</small></div><div class="score-main__meta">정답 ${r.correct}개 × 5점 · 오답 ${r.wrong}개 × -1.25점 · 미기입 ${r.blank}개 × 0점</div></div><div class="score-cards"><div class="score-card"><span class="score-card__label">전체 평균</span><strong class="score-card__value">${fmt(c.average)}점</strong><span class="score-card__hint">학생 대비 ${signed(r.score-(c.average||0))}점</span></div><div class="score-card"><span class="score-card__label">석차</span><strong class="score-card__value">${rank}</strong><span class="score-card__hint">동점자는 같은 순위</span></div><div class="score-card"><span class="score-card__label">상위 비율</span><strong class="score-card__value">${percentile}</strong><span class="score-card__hint">누적 집단 기준</span></div><div class="score-card"><span class="score-card__label">정답</span><strong class="score-card__value" style="color:var(--good)">${r.correct}</strong><span class="score-card__hint">획득 ${r.correct*exam.correctScore}점</span></div><div class="score-card"><span class="score-card__label">오답</span><strong class="score-card__value" style="color:var(--bad)">${r.wrong}</strong><span class="score-card__hint">감점 ${fmt(Math.abs(r.wrong*exam.wrongScore))}점</span></div><div class="score-card"><span class="score-card__label">미기입</span><strong class="score-card__value" style="color:var(--blank)">${r.blank}</strong><span class="score-card__hint">감점 없음</span></div></div></div>
+    const stats=(snapshot.record.domainStats||[]).slice().sort((a,b)=>Number(b.accuracy||0)-Number(a.accuracy||0));
+    const strongest=stats[0]?.domain || '전 범위';
+    const weakest=stats[stats.length-1]?.domain || '기본 개념';
+    const missCount=(Number(r.wrong||0)+Number(r.blank||0));
+    const scoreGap = Number(r.score||0)-Number(c.average||0);
+    return `<section id="scorecard" class="report-section anchor-section"><div class="section-heading"><div><p class="section-kicker">01 · SCORECARD</p><h2 class="section-title">성적표와 전체 성적 비교</h2><p class="section-desc">가장 먼저 봐야 할 핵심 수치를 상단에 요약하고, 아래에서 전체 비교와 단원별 결과를 자세히 확인할 수 있습니다.</p></div><span class="tag">${esc(sourceLabel(snapshot))}</span></div>
+      <div class="insight-strip"><div class="insight-pill"><span>핵심 포인트</span><strong>${missCount}문항 복습</strong><em>오답·미기입 기준</em></div><div class="insight-pill"><span>강점 단원</span><strong>${esc(strongest)}</strong><em>가장 높은 정답률</em></div><div class="insight-pill"><span>보완 단원</span><strong>${esc(weakest)}</strong><em>우선 복습 권장</em></div><div class="insight-pill"><span>평균 대비</span><strong>${signed(scoreGap)}점</strong><em>${scoreGap >= 0 ? '평균 이상' : '평균 보완 필요'}</em></div></div>
+      <div class="score-hero"><div class="score-main"><div class="score-main__label">TOTAL SCORE</div><div class="score-main__value">${fmt(r.score)}<small>/100</small></div><div class="score-main__meta">정답 ${r.correct}개 × 5점 · 오답 ${r.wrong}개 × -1.25점 · 미기입 ${r.blank}개 × 0점</div></div><div class="score-cards"><div class="score-card score-card--highlight"><span class="score-card__label">전체 평균</span><strong class="score-card__value">${fmt(c.average)}점</strong><span class="score-card__hint">학생 대비 ${signed(r.score-(c.average||0))}점</span></div><div class="score-card"><span class="score-card__label">석차</span><strong class="score-card__value">${rank}</strong><span class="score-card__hint">동점자는 같은 순위</span></div><div class="score-card"><span class="score-card__label">상위 비율</span><strong class="score-card__value">${percentile}</strong><span class="score-card__hint">누적 집단 기준</span></div><div class="score-card"><span class="score-card__label">정답</span><strong class="score-card__value" style="color:var(--good)">${r.correct}</strong><span class="score-card__hint">획득 ${r.correct*exam.correctScore}점</span></div><div class="score-card"><span class="score-card__label">오답</span><strong class="score-card__value" style="color:var(--bad)">${r.wrong}</strong><span class="score-card__hint">감점 ${fmt(Math.abs(r.wrong*exam.wrongScore))}점</span></div><div class="score-card"><span class="score-card__label">미기입</span><strong class="score-card__value" style="color:var(--blank)">${r.blank}</strong><span class="score-card__hint">감점 없음</span></div></div></div>
       <div class="notice"><strong>비교 기준</strong> ${esc(comparisonCaution)}</div>
       <div class="chart-grid"><div class="chart-card"><h3>점수 기준 비교</h3><p>학생 점수, 평균, 중앙값, 최고점을 100점 척도로 표시합니다.</p>${scoreComparisonBars(snapshot)}</div><div class="chart-card"><h3>전체 점수 분포</h3><p>동일 시험 응시 기록을 점수 구간별로 집계했습니다.</p><div class="chart-box">${histogramSvg(snapshot)}</div></div><div class="chart-card"><h3>대단원별 정답률</h3><p>굵은 막대는 학생, 가는 막대는 전체 평균입니다.</p>${domainRows(snapshot,exam)}</div><div class="chart-card"><h3>이전 회차 점수 추세</h3><p>같은 학교·이름으로 누적된 회차를 연결합니다.</p><div class="chart-box">${trendSvg(snapshot)}</div></div></div>
     </section>`;
@@ -286,7 +303,7 @@
     const practice = practiceFor(question.no);
     const imageSrc = questionImage(exam, question);
     const solutionPdf = exam.solutionPdf || 'assets/TPL_중급_모의고사_1회_해설.pdf';
-    return `<article class="review-card ${item.status==='blank'?'is-blank':''}"><div class="review-card__head"><div class="review-card__title"><span class="review-card__no">${question.no}</span><div><strong>${esc(question.unit)}</strong><span>${esc(question.topic)}</span></div></div><div class="review-card__answers">학생 답 <strong>${answerLabel(item.answer)}</strong><br>정답 <b>${answerLabel(item.key)}</b></div></div><div class="review-card__body"><img class="question-image" src="${esc(imageSrc)}" alt="${question.no}번 원문 문제"><div class="review-columns"><div class="review-block"><h4>해설</h4><p>${esc(question.officialSummary)}</p></div><div class="review-block"><h4>필요한 공식</h4><ul class="formula-list">${(question.formulas||[]).map(formula=>`<li>${esc(formula)}</li>`).join('')}</ul></div></div><div class="review-block" style="margin-top:14px"><h4>다시 풀 때 확인할 점</h4><p>${esc(question.checkPoint||'조건과 적용 법칙을 한 줄로 정리한 뒤 계산하세요.')}</p></div>${question.sourceNote?`<div class="source-note"><strong>원문 확인 필요</strong><br>${esc(question.sourceNote)}</div>`:''}${practiceQuiz(practice, question.no)}<div class="review-source-link"><a href="${esc(solutionPdf)}" target="_blank" rel="noopener">${esc(exam.shortTitle || exam.title)} 공식 해설 PDF 열기 ↗</a></div></div></article>`;
+    return `<article class="review-card ${item.status==='blank'?'is-blank':''}"><div class="review-card__head"><div class="review-card__title"><span class="review-card__no">${question.no}</span><div><strong>${esc(question.unit)}</strong><span>${esc(question.topic)}</span></div></div><div class="review-card__answers">학생 답 <strong>${answerLabel(item.answer)}</strong><br>정답 <b>${answerLabel(item.key)}</b></div></div><div class="review-card__body"><div class="question-media"><div class="question-media__top"><strong>원문 문제</strong><a class="question-media__link" href="${esc(imageSrc)}" target="_blank" rel="noopener">크게 보기 ↗</a></div><img class="question-image" src="${esc(imageSrc)}" alt="${question.no}번 원문 문제"></div><div class="review-columns"><div class="review-block"><h4>해설</h4><p>${esc(question.officialSummary)}</p></div><div class="review-block"><h4>필요한 공식</h4><ul class="formula-list">${(question.formulas||[]).map(formula=>`<li>${esc(formula)}</li>`).join('')}</ul></div></div><div class="review-block" style="margin-top:14px"><h4>다시 풀 때 확인할 점</h4><p>${esc(question.checkPoint||'조건과 적용 법칙을 한 줄로 정리한 뒤 계산하세요.')}</p></div>${question.sourceNote?`<div class="source-note"><strong>원문 확인 필요</strong><br>${esc(question.sourceNote)}</div>`:''}${practiceQuiz(practice, question.no)}<div class="review-source-link"><a href="${esc(solutionPdf)}" target="_blank" rel="noopener">${esc(exam.shortTitle || exam.title)} 공식 해설 PDF 열기 ↗</a></div></div></article>`;
   }
 
   function reviewSection(snapshot, exam) {
