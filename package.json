@@ -1,9 +1,10 @@
 {
-  "name": "tpl-score-report",
-  "version": "3.9.0",
+  "name": "youngs-physics-review-comprehensive-analysis",
+  "version": "3.3.2",
   "private": true,
-  "description": "Young's Physics TPL score report with centrally editable answer keys, revised round-7 question 7 answer, Excel batch import, collision-safe links, cohort statistics, and DOCX export",
   "scripts": {
-    "test": "node tests/link_identity_regression.test.js && node tests/apps_script_integrity.test.js && node tests/round6_revision.test.js && node tests/answer_key_override.test.js"
-  }
+    "test": "node --test tests/run-tests.mjs",
+    "serve": "python3 -m http.server 8080 -d site"
+  },
+  "description": "Young's Physics Apps Script hosted parent bridge, Excel batch import, and secure report package"
 }
