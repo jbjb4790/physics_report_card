@@ -6,16 +6,21 @@ window.APP_CONFIG = {
   backendUrl: 'https://script.google.com/macros/s/AKfycbx3PkumTW3dFg1nvXpgcp3o0Y3NX7YfrcMyDUtYB_uMVAKsxe6SDPWi0clMBR-SPwkwzA/exec',
   backendAutoConnect: true,
   backendRequiredForSaves: true,
-  // 새 학생 저장 전에 같은 시험의 기존 로컬·기본 기록을 Google Sheets에 자동 반영합니다.
   autoSyncSameExamCohortOnSave: true,
-  // 서버가 반환한 비교 인원과 이 기기의 같은 시험 기록 수를 대조하고 부족하면 한 번 재동기화합니다.
   verifyServerCohortOnSave: true,
   syncServerRecordsOnLoad: true,
-  serverSyncPageSize: 250,
+
+  // v3.9.1: 학생 목록은 가벼운 listLite API로 최대 500명씩 가져옵니다.
+  serverSyncPageSize: 500,
+
+  // Apps Script 콜드 스타트와 네트워크 지연을 고려한 타임아웃입니다.
+  backendTimeoutMs: 45000,
+
   serverSyncIntervalMs: 120000,
   backendSetupParam: 'appsScript',
-  backendTimeoutMs: 15000,
   reportHashKey: 'report',
   serverHashKey: 'id',
+  fastSyncEnabled: true,
+  fastSyncVersion: '3.9.1',
   footerNote: '본 분석은 입력된 답안과 등록된 집단 데이터를 이용한 자동 학습 보조 자료입니다.'
 };
