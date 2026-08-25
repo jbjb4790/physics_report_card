@@ -10,17 +10,17 @@ window.APP_CONFIG = {
   verifyServerCohortOnSave: true,
   syncServerRecordsOnLoad: true,
 
-  // v3.9.1: 학생 목록은 가벼운 listLite API로 최대 500명씩 가져옵니다.
+  // v3.9.2: 교사용 목록은 listLite, 학생 성적표는 getFast API를 사용합니다.
   serverSyncPageSize: 500,
-
-  // Apps Script 콜드 스타트와 네트워크 지연을 고려한 타임아웃입니다.
-  backendTimeoutMs: 45000,
+  backendTimeoutMs: 60000,
 
   serverSyncIntervalMs: 120000,
   backendSetupParam: 'appsScript',
   reportHashKey: 'report',
   serverHashKey: 'id',
   fastSyncEnabled: true,
-  fastSyncVersion: '3.9.1',
+  fastSyncVersion: '3.9.2',
+  fastReportEnabled: true,
+  fastReportVersion: '3.9.2',
   footerNote: '본 분석은 입력된 답안과 등록된 집단 데이터를 이용한 자동 학습 보조 자료입니다.'
 };

@@ -2,12 +2,14 @@
   'use strict';
 
   const config = window.APP_CONFIG = window.APP_CONFIG || {};
-  config.backendTimeoutMs = Math.max(45000, Number(config.backendTimeoutMs || 0));
+  config.backendTimeoutMs = Math.max(60000, Number(config.backendTimeoutMs || 0));
   config.serverSyncPageSize = Math.max(500, Number(config.serverSyncPageSize || 0));
   config.fastSyncEnabled = true;
-  config.fastSyncVersion = '3.9.1';
+  config.fastSyncVersion = '3.9.2';
+  config.fastReportEnabled = true;
+  config.fastReportVersion = '3.9.2';
 
-  if (window.__YP_FAST_SYNC_TRANSPORT__) return;
+  if (window.__YP_FAST_SERVER_TRANSPORT__) return;
 
   const originalAppendChild = Node.prototype.appendChild;
   const normalizedBackend = String(config.backendUrl || '').trim().replace(/\/+$/, '');
@@ -41,15 +43,15 @@
 
         const fallbackScript = document.createElement('script');
         fallbackScript.async = true;
-        fallbackScript.dataset.ypFastSyncBypass = '1';
+        fallbackScript.dataset.ypFastTransportBypass = '1';
         fallbackScript.src = fallbackUrl.href;
         fallbackScript.onload = () => fallbackScript.remove();
         fallbackScript.onerror = () => {
           fallbackScript.remove();
           originalCallback({
             ok: false,
-            code: 'FAST_SYNC_FALLBACK_FAILED',
-            error: '고속 동기화 API와 기존 동기화 API에 모두 연결하지 못했습니다.'
+            code: 'FAST_API_FALLBACK_FAILED',
+            error: '고속 API와 기존 API에 모두 연결하지 못했습니다.'
           });
         };
         return originalAppendChild.call(document.head, fallbackScript);
@@ -64,7 +66,7 @@
         child &&
         child.tagName === 'SCRIPT' &&
         child.src &&
-        child.dataset?.ypFastSyncBypass !== '1' &&
+        child.dataset?.ypFastTransportBypass !== '1' &&
         isBackendScript(child.src)
       ) {
         const url = new URL(child.src);
@@ -81,18 +83,27 @@
           url.searchParams.set('limit', String(config.serverSyncPageSize || 500));
           installFallback(callbackName, originalCallback, url.href, 'list', 'listReportsLite_');
           child.src = url.href;
+        } else if (action === 'get') {
+          url.searchParams.set('action', 'getFast');
+          installFallback(callbackName, originalCallback, url.href, 'get', 'getReportFast_');
+          child.src = url.href;
         }
       }
     } catch (error) {
-      console.warn('고속 동기화 전송 패치를 적용하지 못했습니다.', error);
+      console.warn('고속 서버 전송 패치를 적용하지 못했습니다.', error);
     }
     return originalAppendChild.apply(this, arguments);
   };
 
-  window.__YP_FAST_SYNC_TRANSPORT__ = {
-    version: '3.9.1',
+  window.__YP_FAST_SERVER_TRANSPORT__ = {
+    version: '3.9.2',
     backendUrl: normalizedBackend,
     timeoutMs: config.backendTimeoutMs,
-    pageSize: config.serverSyncPageSize
+    pageSize: config.serverSyncPageSize,
+    actions: {
+      ping: 'pingLite',
+      list: 'listLite',
+      get: 'getFast'
+    }
   };
 })();
