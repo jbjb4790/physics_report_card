@@ -1,9 +1,9 @@
 {
   "name": "tpl-score-report",
-  "version": "3.9.2",
+  "version": "3.10.0",
   "private": true,
-  "description": "Young's Physics TPL score report with fast student sync and fast report loading",
+  "description": "Young's Physics TPL score report with cumulative repeated-weakness analysis across previous rounds",
   "scripts": {
-    "test": "node tests/link_identity_regression.test.js && node tests/apps_script_integrity.test.js && node tests/round6_revision.test.js && node tests/answer_key_override.test.js && node tests/fast_sync_patch.test.js && node tests/fast_report_patch.test.js"
+    "test": "node tests/persistent_weakness.test.js"
   }
 }
