@@ -1,9 +1,8 @@
 {
-  "name": "tpl-score-report",
-  "version": "3.10.0",
+  "name": "youngs-physics-hard-weak-practice",
+  "version": "3.12.1",
   "private": true,
-  "description": "Young's Physics TPL score report with cumulative repeated-weakness analysis across previous rounds",
   "scripts": {
-    "test": "node tests/persistent_weakness.test.js"
+    "test": "node tests/hard_mode.test.js"
   }
 }
