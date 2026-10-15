@@ -1,0 +1,72 @@
+{
+  "version": "v3.13.0",
+  "generation_date": "2026-10-15",
+  "rebuilt_not_binary_identical": true,
+  "files": [
+    {
+      "file": "README_먼저읽기.md",
+      "size_bytes": 1117,
+      "sha256": "f0fcfbe875205896cb563cb0a5d5b5e26a85d131a763a9c6455831a1201a3aad"
+    },
+    {
+      "file": "apps-script/Code.gs_학생통합_API_자동패치.html",
+      "size_bytes": 2638,
+      "sha256": "4441bc2aaadf702b7ce3eb432b94a4760c1ff74c810e0e8e915a68b7eef62f95"
+    },
+    {
+      "file": "apps-script/StudentProfiles.gs",
+      "size_bytes": 21739,
+      "sha256": "a4da92a8a5e86b06475974a48d387238da40bcb7e0078f68b625ae9e90b20910"
+    },
+    {
+      "file": "site/assets/student-profile-admin.js",
+      "size_bytes": 7745,
+      "sha256": "bac7ac5a355a59f656c0a50dc740cd70a794281ae8b116a2ec2759918bac299c"
+    },
+    {
+      "file": "site/assets/student-profile-report-link.js",
+      "size_bytes": 2408,
+      "sha256": "5f61fbc50ad7f96cf30b6d255cc5ca68032350143d9859a191e7cd957178f671"
+    },
+    {
+      "file": "site/assets/student-profile.css",
+      "size_bytes": 5836,
+      "sha256": "fd0f68514095d8074411b7749155c3539fb2048fe779c4681a87f695a9c09c4a"
+    },
+    {
+      "file": "site/assets/student-profile.js",
+      "size_bytes": 8873,
+      "sha256": "1bb4f5ede03d7c4c2cc99d3d7312f4f6c665d8c5df97f18e09efee0eef150a3d"
+    },
+    {
+      "file": "site/index.html",
+      "size_bytes": 1490,
+      "sha256": "4007cf971fe9fde58c776bdba9d9a8087027dd5160d9aee5db55439751284b93"
+    },
+    {
+      "file": "site/report.html",
+      "size_bytes": 2186,
+      "sha256": "79a5eb53495ce23669c441a4240a217acb83e0a20684c5bfe3bf71a97a2fa5ee"
+    },
+    {
+      "file": "site/student.html",
+      "size_bytes": 955,
+      "sha256": "394ac457563dc5f2f3593164871136c3cdd2a56e126b63f0be30a4da5abb58d9"
+    },
+    {
+      "file": "tests/README.md",
+      "size_bytes": 510,
+      "sha256": "89b424a2a146a5451ff0c036da5bb9d68604ecf7204f5b180e19af2e40fe5d7a"
+    },
+    {
+      "file": "검증결과.md",
+      "size_bytes": 803,
+      "sha256": "4078396e6903521d8021455e15d3b41618195fed5856471525d871315412c8d0"
+    },
+    {
+      "file": "적용방법.md",
+      "size_bytes": 4655,
+      "sha256": "bead3b3da2cd70b2916fdf58f09bc0bff0e7ba5b6d6c21611cd4708b523fa168"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>v3.13.0 Code.gs 학생 통합 API 삽입</title>
+<style>body{font:15px/1.6 system-ui,"Malgun Gothic";background:#f2f6fc;margin:0}main{max-width:800px;margin:34px auto;padding:25px;background:#fff;border:1px solid #cfdeef;border-radius:20px}h1{color:#0b3877}button{padding:12px 16px;border:0;border-radius:10px;background:#095fda;color:white;font-weight:800;cursor:pointer}input{display:block;margin:18px 0}pre{white-space:pre-wrap;color:#17365e;background:#eef4fd;padding:16px;border-radius:12px}</style></head>
+<body><main><h1>v3.13.0 Code.gs API 자동 연결</h1><p>반드시 <b>실제 운영 중인 Apps Script의 Code.gs 원본을 백업</b>한 뒤 파일로 선택하세요. GitHub의 옛 Code.gs로 덮어쓰지 마세요.</p><input type="file" accept=".gs,.js,.txt" id="file"><button type="button" id="make">학생 통합 API 연결된 Code.gs 생성</button><pre id="status">현재 운영 중인 Code.gs 파일을 선택하세요.</pre></main>
+<script>
+document.getElementById('make').onclick=async()=>{
+ const file=document.getElementById('file').files[0],status=document.getElementById('status');
+ if(!file){status.textContent='Code.gs 파일을 먼저 선택하세요.';return;}
+ let text=await file.text();
+ if(text.includes("action === 'studentProfile'")){status.textContent='이미 학생 통합 API가 연결되어 있습니다. 중복 적용하지 않았습니다.';return;}
+ const marker="    } else if (action === 'get') {";
+ if(!text.includes(marker)){status.textContent='doGet(e)의 get 분기를 찾지 못했습니다. 수동수정 안내를 확인하세요.';return;}
+ const block=`    } else if (action === 'studentResolve') {\n      response = ypResolveStudentFromReport_(e.parameter.id);\n    } else if (action === 'studentProfile') {\n      response = ypGetStudentProfile_(e.parameter.sid);\n    } else if (action === 'studentDirectory') {\n      assertWriteKey_(e.parameter.writeKey);\n      response = ypStudentDirectory_();\n`;
+ text=text.replace(marker,block+marker);
+ const blob=new Blob([text],{type:'text/plain;charset=utf-8'}),u=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=u;a.download='Code_학생통합_API_삽입본.gs';a.click();setTimeout(()=>URL.revokeObjectURL(u),800);
+ status.textContent='생성 완료. Apps Script에 StudentProfiles.gs를 추가하고, Code.gs의 기존 내용을 백업한 뒤 삽입본을 적용하세요. initializeStudentProfiles 실행 후 웹 앱 새 버전 배포가 필요합니다.';
+};
+</script></body></html>
