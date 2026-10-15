@@ -1,0 +1,19 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>v3.14.0 Code.gs 반 관리 API 삽입</title>
+<style>body{font:15px/1.6 system-ui,"Malgun Gothic";background:#f2f6fc;margin:0}main{max-width:800px;margin:34px auto;padding:25px;background:#fff;border:1px solid #cfdeef;border-radius:20px}h1{color:#0b3877}button{padding:12px 16px;border:0;border-radius:10px;background:#095fda;color:white;font-weight:800;cursor:pointer}input{display:block;margin:18px 0}pre{white-space:pre-wrap;color:#17365e;background:#eef4fd;padding:16px;border-radius:12px}</style></head>
+<body><main><h1>v3.14.0 Code.gs 반 관리 API 자동 연결</h1><p><b>v3.13.0 학생 통합 API를 먼저 적용</b>하세요. 실제 운영 중인 Code.gs 원본을 먼저 백업하고 파일을 선택하세요.</p><input type="file" accept=".gs,.js,.txt" id="file"><button type="button" id="make">반 관리 API 연결된 Code.gs 생성</button><pre id="status">현재 운영 중인 Code.gs 파일을 선택하세요.</pre></main>
+<script>
+document.getElementById('make').onclick=async()=>{
+ const file=document.getElementById('file').files[0],status=document.getElementById('status');
+ if(!file){status.textContent='Code.gs 파일을 먼저 선택하세요.';return;}
+ let text=await file.text();
+ if(!text.includes("action === 'studentProfile'")){status.textContent='학생 통합 API가 없습니다. v3.13.0 패치를 먼저 적용하세요.';return;}
+ if(text.includes("action === 'classRoster'")){status.textContent='반 관리 API가 이미 연결되어 있습니다.';return;}
+ const marker="    } else if (action === 'studentDirectory') {";
+ if(!text.includes(marker)){status.textContent='studentDirectory 분기를 찾지 못했습니다. 수동수정 안내를 확인하세요.';return;}
+ const block=`    } else if (action === 'classRoster') {\n      assertWriteKey_(e.parameter.writeKey);\n      response = ypGetClassRoster_();\n    } else if (action === 'classRosterSave') {\n      assertWriteKey_(e.parameter.writeKey);\n      response = ypSaveClassRoster_(e.parameter.payload);\n`;
+ text=text.replace(marker,block+marker);
+ const blob=new Blob([text],{type:'text/plain;charset=utf-8'}),u=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=u;a.download='Code_반관리_API_삽입본.gs';a.click();setTimeout(()=>URL.revokeObjectURL(u),800);
+ status.textContent='생성 완료. Apps Script에 ClassRoster.gs를 추가하고, Code.gs를 백업한 뒤 삽입본을 적용하세요. initializeClassRoster 실행 후 기존 웹 앱을 새 버전으로 배포하세요.';
+};
+</script></body></html>

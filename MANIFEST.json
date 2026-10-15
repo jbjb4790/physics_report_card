@@ -1,72 +1,52 @@
 {
-  "version": "v3.13.0",
+  "version": "v3.14.0",
   "generation_date": "2026-10-15",
   "rebuilt_not_binary_identical": true,
   "files": [
     {
       "file": "README_먼저읽기.md",
-      "size_bytes": 1117,
-      "sha256": "f0fcfbe875205896cb563cb0a5d5b5e26a85d131a763a9c6455831a1201a3aad"
+      "size_bytes": 1030,
+      "sha256": "96c0481cc6ca8a44dbbea69bb2e39c07dff1fa38d419de2305d57c0ad0854c03"
     },
     {
-      "file": "apps-script/Code.gs_학생통합_API_자동패치.html",
-      "size_bytes": 2638,
-      "sha256": "4441bc2aaadf702b7ce3eb432b94a4760c1ff74c810e0e8e915a68b7eef62f95"
+      "file": "apps-script/ClassRoster.gs",
+      "size_bytes": 8650,
+      "sha256": "87658c0403d296b3082435607576a8938893f5437649e364c963e27640632814"
     },
     {
-      "file": "apps-script/StudentProfiles.gs",
-      "size_bytes": 21739,
-      "sha256": "a4da92a8a5e86b06475974a48d387238da40bcb7e0078f68b625ae9e90b20910"
+      "file": "apps-script/Code.gs_반관리_API_자동패치.html",
+      "size_bytes": 2667,
+      "sha256": "d9ea4a13a5cfd22b49967bd75a1b9c50cf576113f68c7eedb7463b696865d105"
     },
     {
-      "file": "site/assets/student-profile-admin.js",
-      "size_bytes": 7745,
-      "sha256": "bac7ac5a355a59f656c0a50dc740cd70a794281ae8b116a2ec2759918bac299c"
-    },
-    {
-      "file": "site/assets/student-profile-report-link.js",
-      "size_bytes": 2408,
-      "sha256": "5f61fbc50ad7f96cf30b6d255cc5ca68032350143d9859a191e7cd957178f671"
-    },
-    {
-      "file": "site/assets/student-profile.css",
-      "size_bytes": 5836,
-      "sha256": "fd0f68514095d8074411b7749155c3539fb2048fe779c4681a87f695a9c09c4a"
-    },
-    {
-      "file": "site/assets/student-profile.js",
-      "size_bytes": 8873,
-      "sha256": "1bb4f5ede03d7c4c2cc99d3d7312f4f6c665d8c5df97f18e09efee0eef150a3d"
+      "file": "site/assets/class-student-entry.js",
+      "size_bytes": 19328,
+      "sha256": "5d2bc50216878a19200a95f6ed7bd46fcab97497e37aa071b4ead5167ca528bc"
     },
     {
       "file": "site/index.html",
-      "size_bytes": 1490,
-      "sha256": "4007cf971fe9fde58c776bdba9d9a8087027dd5160d9aee5db55439751284b93"
-    },
-    {
-      "file": "site/report.html",
-      "size_bytes": 2186,
-      "sha256": "79a5eb53495ce23669c441a4240a217acb83e0a20684c5bfe3bf71a97a2fa5ee"
-    },
-    {
-      "file": "site/student.html",
-      "size_bytes": 955,
-      "sha256": "394ac457563dc5f2f3593164871136c3cdd2a56e126b63f0be30a4da5abb58d9"
+      "size_bytes": 1555,
+      "sha256": "02688bfb60edf3b50c8ff628f1e762fde954e8bf1c1ca26e18d055b32f44eccf"
     },
     {
       "file": "tests/README.md",
-      "size_bytes": 510,
-      "sha256": "89b424a2a146a5451ff0c036da5bb9d68604ecf7204f5b180e19af2e40fe5d7a"
+      "size_bytes": 192,
+      "sha256": "ddcdb7577291ab785574110400a24f0ee3cb9bad52793d90f83f7c40ffb52c6c"
+    },
+    {
+      "file": "tests/roster_backend.test.js",
+      "size_bytes": 5512,
+      "sha256": "7042e8ab78b2109342aeb41143ced3437efeabdbf10ee59fde0bb37cf05af734"
     },
     {
       "file": "검증결과.md",
       "size_bytes": 803,
-      "sha256": "4078396e6903521d8021455e15d3b41618195fed5856471525d871315412c8d0"
+      "sha256": "18193c40cf81f8ce4fd51530f4418d949dbfdc6516d2edce4278131a7d755ab9"
     },
     {
       "file": "적용방법.md",
-      "size_bytes": 4655,
-      "sha256": "bead3b3da2cd70b2916fdf58f09bc0bff0e7ba5b6d6c21611cd4708b523fa168"
+      "size_bytes": 3139,
+      "sha256": "486363566f62ba45eaafca441fa97eed21492d4072a0d8d72fe69d9f389dd4ad"
     }
   ]
 }

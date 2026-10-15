@@ -1,15 +1,18 @@
-# Young's Physics v3.13.0 패치 재전달
+# Young's Physics v3.14.0 패치 재전달
 
-**학생 통합페이지 · 고정 링크 · 누적분석**
+**반별 학생 선택 · 모의고사 성적 입력 관리**
 
-이 ZIP은 2026-10-15에 앞선 대화의 v3.13.0 기능을 기준으로 다시 제작한 패치입니다. 과거에 제공되었던 ZIP 원본이 이 세션에 보존되지 않아 완전히 동일한 바이너리라고 할 수 없습니다.
+이 ZIP은 2026-10-15에 앞선 대화의 v3.14.0 기능을 기준으로 다시 제작한 패치입니다. 이전 ZIP과 바이너리까지 동일하다는 뜻은 아닙니다.
 
-- 목적: 학생별 고정 StudentToken 링크 하나로 여러 회차 결과 확인, 누적 강점/약점 분석
-- GitHub 신규: `site/student.html`, `site/assets/student-profile*.js/css`
-- GitHub 교체: `site/index.html`, `site/report.html`
-- Apps Script 신규: `apps-script/StudentProfiles.gs`
-- 실제 운영 중인 `Code.gs`에 `studentResolve`, `studentProfile`, `studentDirectory` 분기를 추가해야 합니다.
-- Google Sheets `Reports`는 수정하지 않으며 새 `Students` 탭을 사용합니다.
-- GitHub/Apps Script에는 **아무 것도 자동 업로드·커밋·배포하지 않았습니다.**
+**먼저 v3.13.0 패치가 실제 적용되어 있어야 합니다.**
 
-실제 적용 전 `적용방법.md`와 `검증결과.md`를 읽으세요. 특히 현행 Apps Script 전체 코드를 반드시 먼저 백업하세요.
+- 목적: 시험 → 반 → 학생 선택, 학생 정보 자동 입력, 기존 성적 수정, 미입력 관리
+- GitHub 신규: `site/assets/class-student-entry.js`
+- GitHub 교체: `site/index.html` (v3.13.0 관리자 스크립트 유지 + 새 스크립트 1개 추가)
+- Apps Script 신규: `apps-script/ClassRoster.gs`
+- 운영 `Code.gs`에 `classRoster`, `classRosterSave` 분기를 추가해야 합니다.
+- Google Sheets에는 새 `Classes`, `ClassStudents` 탭만 생성합니다.
+- `Reports`/`Students`/학생 토큰은 변경하지 않습니다.
+- Github/Apps Script 실제 배포는 수행하지 않았습니다.
+
+세부 안내는 `적용방법.md`를 보세요.
